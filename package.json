@@ -1,0 +1,12 @@
+{
+  "name": "server-manager",
+  "version": "1.0.0",
+  "description": "Gerenciador de servidores locais - Central Contabil",
+  "type": "module",
+  "scripts": {
+    "kill-port": "for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :9000 ^| findstr LISTENING') do taskkill /F /PID %a",
+    "start": "npm run kill-port & node server.mjs",
+    "dev": "npm run kill-port & node --watch server.mjs"
+  },
+  "dependencies": {}
+}

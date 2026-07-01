@@ -1,0 +1,15 @@
+# Logs gerados em runtime (serviço, bandeja, instalador)
+logs/
+*.log
+
+# Dependências (o Manager não tem deps, mas por segurança)
+node_modules/
+
+# Ambiente / segredos
+.env
+.env.*
+!.env.example
+
+# Windows
+Thumbs.db
+Desktop.ini

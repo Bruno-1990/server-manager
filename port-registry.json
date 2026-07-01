@@ -1,0 +1,274 @@
+{
+  "_doc": {
+    "leia": "DOCUMENTACAO.md (secao 3) antes de editar.",
+    "campos": "porta, tipo(frontend|backend|fullstack|infra), tecnologia, healthCheck, comando, cwd(relativo a server-manager/), pararComando(so Docker), env(opcional).",
+    "docker": "Se 'tecnologia' ou 'comando' contem 'docker', o servico e Docker-aware: inicia com 'up -d' (sem matar porta) e para com 'pararComando'. NUNCA usar taskkill em porta de container.",
+    "ignorado": "Esta chave _doc e ignorada pelo server.mjs (so le apps e infraCompartilhada)."
+  },
+  "apps": {
+    "dctf-web": {
+      "nome": "DCTF WEB",
+      "diretorio": "../DCTF WEB/DCTF_MPC",
+      "servicos": {
+        "api": {
+          "porta": 38572,
+          "tipo": "backend",
+          "tecnologia": "Express.js",
+          "healthCheck": "http://localhost:38572/api/health",
+          "comando": "npm run dev",
+          "cwd": "../DCTF WEB/DCTF_MPC"
+        },
+        "frontend": {
+          "porta": 5173,
+          "tipo": "frontend",
+          "tecnologia": "Vite + React",
+          "healthCheck": "http://localhost:5173",
+          "comando": "npm run dev",
+          "cwd": "../DCTF WEB/DCTF_MPC/frontend"
+        }
+      },
+      "dependencias": ["mysql"]
+    },
+    "regularizacao-cpf": {
+      "nome": "Regularização CPF",
+      "diretorio": "../Regularizacao_CPF",
+      "servicos": {
+        "nextjs": {
+          "porta": 4001,
+          "tipo": "fullstack",
+          "tecnologia": "Next.js",
+          "healthCheck": "http://localhost:4001",
+          "comando": "npm run dev",
+          "cwd": "../Regularizacao_CPF"
+        }
+      },
+      "dependencias": ["mysql"]
+    },
+    "irpf2026": {
+      "nome": "IRPF 2026",
+      "diretorio": "../IRPF2026",
+      "servicos": {
+        "api": {
+          "porta": 38573,
+          "tipo": "backend",
+          "tecnologia": "Express.js",
+          "healthCheck": "http://localhost:38573/api/health",
+          "comando": "npm run dev",
+          "cwd": "../IRPF2026"
+        },
+        "frontend": {
+          "porta": 5174,
+          "tipo": "frontend",
+          "tecnologia": "Vite + React",
+          "healthCheck": "http://localhost:5174",
+          "comando": "npm run dev",
+          "cwd": "../IRPF2026/frontend"
+        }
+      },
+      "dependencias": ["mysql"]
+    },
+    "webapp": {
+      "nome": "Webapp Fiscal Tools",
+      "diretorio": "../webapp",
+      "servicos": {
+        "backend": {
+          "porta": 8000,
+          "tipo": "backend",
+          "tecnologia": "Stack Docker (API + workers + Redis)",
+          "healthCheck": "http://localhost:8000/api/v1/health",
+          "comando": "docker compose --profile sped --profile comparacao --profile nfse --profile gnre up -d",
+          "pararComando": "docker compose --profile sped --profile comparacao --profile nfse --profile gnre stop",
+          "cwd": "../webapp"
+        },
+        "frontend": {
+          "porta": 5176,
+          "tipo": "frontend",
+          "tecnologia": "Vite + React",
+          "healthCheck": "http://localhost:5176",
+          "comando": "npm run dev:fe",
+          "cwd": "../webapp/webapp-01"
+        }
+      },
+      "dependencias": []
+    },
+    "scrap-legislacao": {
+      "nome": "Scraper Legislação",
+      "diretorio": "../SCRAP-LEGISLACAO",
+      "servicos": {
+        "api": {
+          "porta": 8010,
+          "tipo": "backend",
+          "tecnologia": "FastAPI (Python)",
+          "healthCheck": "http://localhost:8010",
+          "comando": "python server.py",
+          "cwd": "../SCRAP-LEGISLACAO"
+        }
+      },
+      "dependencias": []
+    },
+    "sped": {
+      "nome": "SPED Conferência",
+      "diretorio": "../SPED",
+      "servicos": {
+        "api": {
+          "porta": 8021,
+          "tipo": "backend",
+          "tecnologia": "FastAPI (Python)",
+          "healthCheck": "http://localhost:8021",
+          "comando": ".venv-win\\Scripts\\python.exe -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8021",
+          "cwd": "../SPED",
+          "env": { "PYTHONPATH": "." }
+        },
+        "frontend": {
+          "porta": 5175,
+          "tipo": "frontend",
+          "tecnologia": "Vite + React",
+          "healthCheck": "http://localhost:5175",
+          "comando": "npm run dev",
+          "cwd": "../SPED/frontend"
+        },
+        "postgresql": {
+          "porta": 5434,
+          "tipo": "infra",
+          "tecnologia": "PostgreSQL 16 (Docker)",
+          "healthCheck": "tcp://localhost:5434",
+          "comando": "docker compose -f docker-compose.db.yml up -d",
+          "pararComando": "docker compose -f docker-compose.db.yml stop",
+          "cwd": "../SPED"
+        }
+      },
+      "dependencias": ["sped-postgresql"]
+    },
+    "centria": {
+      "nome": "Centria AAP",
+      "diretorio": "../centria",
+      "servicos": {
+        "api": {
+          "porta": 8091,
+          "tipo": "backend",
+          "tecnologia": "Spring Boot (Java)",
+          "healthCheck": "http://localhost:8091/actuator/health",
+          "comando": "make run-api",
+          "cwd": "../centria"
+        },
+        "frontend": {
+          "porta": 5180,
+          "tipo": "frontend",
+          "tecnologia": "Vite + React",
+          "healthCheck": "http://localhost:5180",
+          "comando": "make run-web",
+          "cwd": "../centria"
+        },
+        "postgresql": {
+          "porta": 25434,
+          "tipo": "infra",
+          "tecnologia": "PostgreSQL 16 (Docker)",
+          "healthCheck": "tcp://localhost:25434",
+          "comando": "docker network create bubble 2>nul & docker compose -f apps/backend-api/infra/docker-compose.yaml up -d",
+          "pararComando": "docker compose -f apps/backend-api/infra/docker-compose.yaml stop",
+          "cwd": "../centria"
+        },
+        "localstack": {
+          "porta": 24666,
+          "tipo": "infra",
+          "tecnologia": "LocalStack (Docker)",
+          "healthCheck": "http://localhost:24666/_localstack/health",
+          "comando": "docker network create bubble 2>nul & docker compose -f apps/backend-api/infra/docker-compose.yaml up -d",
+          "pararComando": "docker compose -f apps/backend-api/infra/docker-compose.yaml stop",
+          "cwd": "../centria"
+        }
+      },
+      "dependencias": ["centria-postgresql", "centria-localstack"]
+    },
+    "scraping-ecac": {
+      "nome": "Scraping eCAC (DCTFWeb)",
+      "diretorio": "../scaping - eCAC",
+      "servicos": {
+        "web": {
+          "porta": 8030,
+          "tipo": "fullstack",
+          "tecnologia": "Express.js + SQLite",
+          "healthCheck": "http://localhost:8030/api/stats",
+          "comando": "start.bat",
+          "cwd": "../scaping - eCAC"
+        },
+        "chrome-cdp": {
+          "porta": 9222,
+          "tipo": "infra",
+          "tecnologia": "Chrome DevTools Protocol",
+          "healthCheck": "http://localhost:9222/json/version",
+          "comando": "chrome.exe --remote-debugging-port=9222 --user-data-dir=\"C:\\Users\\bruno\\chrome-cdp\"",
+          "cwd": "../scaping - eCAC"
+        }
+      },
+      "dependencias": []
+    },
+    "extrator-gnre": {
+      "nome": "Extrator GNRE",
+      "diretorio": "../extrator GNRE",
+      "servicos": {
+        "api": {
+          "porta": 8040,
+          "tipo": "fullstack",
+          "tecnologia": "FastAPI (Python) + SQLite",
+          "healthCheck": "http://localhost:8040/",
+          "comando": "python -m uvicorn app.main:app --host 127.0.0.1 --port 8040",
+          "cwd": "../extrator GNRE"
+        }
+      },
+      "dependencias": []
+    },
+    "oneclick-v2": {
+      "nome": "OneClick V2 (SaaS ERP/CRM)",
+      "diretorio": "../ONECLICK V2",
+      "servicos": {
+        "api": {
+          "porta": 4000,
+          "tipo": "backend",
+          "tecnologia": "NestJS + tRPC + Prisma",
+          "healthCheck": "http://localhost:4000/api/health",
+          "comando": "pnpm --filter @saas/api dev",
+          "cwd": "../ONECLICK V2",
+          "env": { "PORT": "4000" }
+        },
+        "web": {
+          "porta": 3000,
+          "tipo": "frontend",
+          "tecnologia": "Next.js 15",
+          "healthCheck": "http://localhost:3000",
+          "comando": "pnpm --filter @saas/web dev",
+          "cwd": "../ONECLICK V2"
+        },
+        "postgresql": {
+          "porta": 5432,
+          "tipo": "infra",
+          "tecnologia": "PostgreSQL 16 (Docker)",
+          "healthCheck": "tcp://localhost:5432",
+          "comando": "docker compose up -d postgres",
+          "pararComando": "docker compose stop postgres",
+          "cwd": "../ONECLICK V2"
+        },
+        "redis": {
+          "porta": 6379,
+          "tipo": "infra",
+          "tecnologia": "Redis 7 (Docker)",
+          "healthCheck": "tcp://localhost:6379",
+          "comando": "docker compose up -d redis",
+          "pararComando": "docker compose stop redis",
+          "cwd": "../ONECLICK V2"
+        }
+      },
+      "dependencias": ["oneclick-v2-postgresql", "oneclick-v2-redis"]
+    }
+  },
+  "infraCompartilhada": {
+    "mysql": {
+      "nome": "MySQL / MariaDB",
+      "porta": 3306,
+      "tipo": "infra",
+      "tecnologia": "MySQL",
+      "healthCheck": "tcp://localhost:3306",
+      "usadoPor": ["dctf-web", "regularizacao-cpf", "irpf2026"]
+    }
+  }
+}

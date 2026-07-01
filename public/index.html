@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Server Manager — Central Contábil</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234a9cbd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='3' width='20' height='8' rx='2'/%3E%3Crect x='2' y='13' width='20' height='8' rx='2'/%3E%3Cline x1='6' y1='7' x2='6.01' y2='7'/%3E%3Cline x1='6' y1='17' x2='6.01' y2='17'/%3E%3C/svg%3E">
+  <link rel="preload" href="vendor/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo" id="brand-logo"></div>
+      <div>
+        <h1>Server Manager</h1>
+        <div class="subtitle">Central Contábil — Gerenciador de Servidores Locais</div>
+      </div>
+    </div>
+
+    <div class="search" id="search-wrap">
+      <span id="search-icon"></span>
+      <input type="text" id="busca" placeholder="Buscar serviço, porta, tecnologia..." autocomplete="off">
+      <kbd>/</kbd>
+    </div>
+
+    <div class="topbar-actions">
+      <span class="live" id="live"><span class="live-dot"></span><span id="live-label">conectando…</span></span>
+      <span id="relogio"></span>
+      <div class="accent-picker" id="accent-picker" title="Cor de acento"></div>
+      <button class="btn btn-sm btn-icon btn-ghost" id="btn-refresh" title="Atualizar agora"></button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero / resumo -->
+    <section class="hero" id="hero"></section>
+
+    <!-- Aviso de Docker desligado -->
+    <section id="secao-docker" class="secao hidden">
+      <div id="aviso-docker" class="docker-aviso"></div>
+    </section>
+
+    <!-- Conflitos -->
+    <section id="secao-conflitos" class="secao hidden">
+      <h2 class="secao-titulo alerta">Conflitos de Porta Detectados</h2>
+      <div id="lista-conflitos"></div>
+    </section>
+
+    <!-- Apps -->
+    <section class="secao">
+      <h2 class="secao-titulo">Aplicações <span class="conta" id="conta-apps"></span></h2>
+      <div id="grid-apps" class="grid-apps"></div>
+    </section>
+
+    <!-- Métricas de container -->
+    <section class="secao hidden" id="secao-metricas">
+      <h2 class="secao-titulo clicavel" onclick="toggleSecao('metricas')">
+        <span id="ico-metricas"></span> Métricas de Containers
+        <span class="conta" id="conta-metricas"></span>
+        <span class="toggle-icon" id="toggle-metricas"></span>
+      </h2>
+      <div id="metricas" class="secao-conteudo">
+        <div class="metricas-wrap">
+          <div class="metricas-chart"><canvas id="chart-cpu"></canvas></div>
+          <div class="metricas-lista" id="metricas-lista"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Mapa de Portas -->
+    <section class="secao">
+      <h2 class="secao-titulo clicavel" onclick="toggleSecao('mapa-portas')">
+        <span id="ico-portas"></span> Mapa de Portas
+        <span class="toggle-icon" id="toggle-mapa-portas"></span>
+      </h2>
+      <div id="mapa-portas" class="secao-conteudo collapsed">
+        <div class="tabela-container">
+          <table id="tabela-portas">
+            <thead>
+              <tr>
+                <th>Porta</th><th>App</th><th>Serviço</th><th>Tipo</th>
+                <th>Tecnologia</th><th>Status</th><th>Ações</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal de Logs / Rebuild -->
+  <div id="modal-logs" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-titulo">Logs</h3>
+        <button onclick="fecharModal()" class="btn btn-sm" id="btn-fechar-modal">Fechar</button>
+      </div>
+      <div class="modal-toolbar">
+        <div class="search">
+          <span id="log-search-icon"></span>
+          <input type="text" id="log-busca" placeholder="Filtrar linhas..." autocomplete="off">
+        </div>
+        <label class="toolbar-toggle"><input type="checkbox" id="log-autoscroll" checked> Autoscroll</label>
+        <label class="toolbar-toggle"><input type="checkbox" id="log-wrap" checked> Quebrar linha</label>
+        <button class="btn btn-sm" onclick="copiarLogs()">Copiar</button>
+        <button class="btn btn-sm" onclick="baixarLogs()">Baixar</button>
+        <button class="btn btn-sm btn-danger" onclick="limparLogs()">Limpar</button>
+      </div>
+      <pre id="modal-body" class="log-viewer"></pre>
+    </div>
+  </div>
+
+  <div id="notificacoes"></div>
+
+  <script src="vendor/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
