@@ -25,6 +25,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MANAGER_PORTS = [9000, 9001];
 const MANAGER_PORT = MANAGER_PORTS[0]; // porta principal (usada em URLs/logs)
 
+// Como o Manager foi iniciado:
+//  • "service": run-service.bat rodou o node dentro de um loop keep-alive
+//    (ao sair, o .bat mata as portas e reinicia o node em ~5s). Detectado pela
+//    env SM_RUNNER que o run-service.bat define antes de subir o node.
+//  • standalone: node/npm/start.bat — ao sair NÃO volta sozinho.
+const SOB_RUNNER = process.env.SM_RUNNER === "service";
+// Nome da Tarefa Agendada (ver setup-autostart.ps1). 'schtasks /End' para limpo a
+// árvore wscript→cmd→node SEM disparar o restart-on-failure da tarefa.
+const TASK_NAME = "ServerManager - Central Contabil";
+
 // ─── Evitar que erros não tratados derrubem o processo ───
 process.on("uncaughtException", (err) => {
   console.error("[ERRO FATAL] uncaughtException:", err.message);
@@ -371,27 +381,111 @@ function obterLogs(appId, svcId) {
   return info.logs.slice(-200);
 }
 
-// ─── Matar processo em uma porta (Windows) ───
-function matarProcessoNaPorta(porta) {
+// ─── Listar PIDs em estado LISTENING numa porta (Windows) ───
+function pidsListening(porta) {
   return new Promise((resolve) => {
     exec(`netstat -ano | findstr :${porta} | findstr LISTENING`, (err, stdout) => {
-      if (err || !stdout.trim()) return resolve({ ok: false, erro: "Nenhum processo encontrado" });
-      const linhas = stdout.trim().split("\n");
+      if (err || !stdout.trim()) return resolve([]);
       const pids = new Set();
-      for (const linha of linhas) {
+      for (const linha of stdout.trim().split("\n")) {
         const partes = linha.trim().split(/\s+/);
         const pid = partes[partes.length - 1];
         if (pid && pid !== "0") pids.add(pid);
       }
-      if (pids.size === 0) return resolve({ ok: false, erro: "Nenhum PID encontrado" });
-
-      let killed = 0;
-      for (const pid of pids) {
-        exec(`taskkill /PID ${pid} /T /F`, () => killed++);
-      }
-      resolve({ ok: true, pids: [...pids], killed });
+      resolve([...pids]);
     });
   });
+}
+
+// ─── Matar processo em uma porta (Windows) ───
+async function matarProcessoNaPorta(porta) {
+  const pids = await pidsListening(porta);
+  if (pids.length === 0) return { ok: false, erro: "Nenhum processo encontrado" };
+  let killed = 0;
+  await Promise.all(
+    pids.map((pid) => new Promise((res) => exec(`taskkill /PID ${pid} /T /F`, () => { killed++; res(); })))
+  );
+  return { ok: true, pids, killed };
+}
+
+// ─── Liberar as portas do Manager ANTES de subir (evita duplicação) ───
+// Se já houver um Manager (ou qualquer processo) escutando em 9000/9001, mata-o
+// antes do bind. Nunca mata o próprio processo (que ainda nem fez listen).
+async function liberarPortasNoBoot() {
+  for (const porta of MANAGER_PORTS) {
+    const pids = (await pidsListening(porta)).filter((p) => String(p) !== String(process.pid));
+    for (const pid of pids) {
+      console.log(`[BOOT] Porta ${porta} ocupada pelo PID ${pid} — encerrando para evitar duplicação do Manager.`);
+      await new Promise((res) => exec(`taskkill /PID ${pid} /T /F`, () => res()));
+    }
+  }
+  // Aguarda as portas realmente liberarem (máx ~3s)
+  for (let i = 0; i < 6; i++) {
+    let algumaAberta = false;
+    for (const porta of MANAGER_PORTS) if (await checarPorta(porta)) { algumaAberta = true; break; }
+    if (!algumaAberta) return;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+// ─── Gerar comandos .cmd que matam as portas do Manager ───
+function killPortsCmd() {
+  return MANAGER_PORTS
+    .map((p) => `for /f "tokens=5" %%A in ('netstat -aon ^| findstr ":${p} " ^| findstr LISTENING') do taskkill /F /PID %%A >nul 2>&1`)
+    .join("\r\n");
+}
+
+// ─── Disparar um helper .cmd desacoplado (sobrevive à saída do node) ───
+function dispararHelper(nome, conteudo) {
+  const script = path.join(__dirname, nome);
+  fs.writeFileSync(script, conteudo, "utf8");
+  const child = spawn(process.env.ComSpec || "cmd.exe", ["/c", script], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    cwd: __dirname,
+  });
+  child.unref();
+}
+
+// ─── Reiniciar o próprio Manager ───
+// service:    basta sair — o loop keep-alive do run-service.bat mata as portas e
+//             sobe um node novo em ~5s. Sem instância concorrente.
+// standalone: um relauncher desacoplado espera este processo sair, mata as portas
+//             e sobe um node novo; este processo então sai.
+async function reiniciarManager() {
+  if (SOB_RUNNER) {
+    setTimeout(() => process.exit(0), 400);
+    return { ok: true, modo: "service", msg: "Reiniciando via serviço — volta em alguns segundos…" };
+  }
+  const conteudo = [
+    "@echo off",
+    "timeout /t 2 /nobreak >nul",
+    killPortsCmd(),
+    `cd /d "${__dirname}"`,
+    `"${process.execPath}" server.mjs`,
+    "",
+  ].join("\r\n");
+  dispararHelper("_sm-reiniciar.cmd", conteudo);
+  setTimeout(() => process.exit(0), 400);
+  return { ok: true, modo: "standalone", msg: "Reiniciando o Manager…" };
+}
+
+// ─── Finalizar o próprio Manager (parada limpa, sem auto-restart) ───
+// Um helper desacoplado encerra a Tarefa Agendada (schtasks /End para a árvore
+// wscript→cmd→node SEM disparar restart-on-failure), mata qualquer runner
+// (run-service.bat/vbs) que tenha ficado solto e libera as portas 9000/9001.
+async function finalizarManager() {
+  const conteudo = [
+    "@echo off",
+    "timeout /t 1 /nobreak >nul",
+    `schtasks /End /TN "${TASK_NAME}" >nul 2>&1`,
+    `powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'run-service' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1`,
+    killPortsCmd(),
+    "",
+  ].join("\r\n");
+  dispararHelper("_sm-finalizar.cmd", conteudo);
+  return { ok: true, modo: SOB_RUNNER ? "service" : "standalone", msg: "Finalizando o Manager…" };
 }
 
 // ─── Métricas de containers Docker (CPU/RAM/uptime) ───
@@ -425,14 +519,120 @@ function obterMetricas() {
   });
 }
 
-// ─── SSE: snapshot completo do estado (status + docker + conflitos + métricas) ───
+// ─── Git: avisa quando o remoto está à frente (fetch throttled + cache) ───
+// Roda `git fetch` no máx. a cada GIT_TTL e compara HEAD com o upstream de cada app
+// que é repo git. Não bloqueia o snapshot: retorna o cache e atualiza em background.
+const GIT_TTL = 5 * 60 * 1000; // 5 min entre fetches
+let _gitCache = { apps: {}, ts: 0, checando: false };
+
+function execP(cmd, opts = {}) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { timeout: 20000, ...opts }, (err, stdout) => (err ? reject(err) : resolve(stdout || "")));
+  });
+}
+
+async function atualizarGitCache() {
+  const registro = carregarRegistro();
+  // Apps do registro + repos vigiados que não são apps (server-manager, etc).
+  const alvos = [
+    ...Object.entries(registro.apps).map(([id, a]) => ({ id, nome: a.nome, diretorio: a.diretorio })),
+    ...(registro.reposVigiados || []),
+  ];
+  const resultado = {};
+  await Promise.all(alvos.map(async (alvo) => {
+    if (!alvo.diretorio) return;
+    const dir = path.resolve(__dirname, alvo.diretorio);
+    try { await execP(`git -C "${dir}" rev-parse --is-inside-work-tree`); }
+    catch { return; } // não é repo git — ignora
+
+    // Remotes de verdade do repo. Nada aqui pode assumir o nome `origin`: o webapp
+    // usa `webapp`, o irpf2026 usa `bruno`, o centria tem `base` e `origin`. Quando
+    // a cascata só olhava `origin/*`, esses repos ficavam mudos no painel.
+    let remotes = [];
+    try {
+      remotes = (await execP(`git -C "${dir}" remote`)).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    } catch { /* sem remote: sem aviso a dar */ }
+    if (!remotes.length) return;
+    remotes.sort((a, b) => (a === "origin" ? -1 : b === "origin" ? 1 : 0));
+
+    // fetch NÃO-interativo, remote a remote: usa credencial em cache se houver; se
+    // faltar, falha quieto em vez de abrir a janela do Git Credential Manager (que
+    // pipocava 3–5x por ciclo). Um remote que falha não pode passar por "em dia",
+    // então guardamos quais atualizaram para marcar o aviso como confiável ou não.
+    const fetchOk = {};
+    for (const rem of remotes) {
+      try {
+        await execP(`git -c credential.interactive=false -C "${dir}" fetch --prune --quiet ${rem}`,
+          { env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never", GIT_ASKPASS: "echo" } });
+        fetchOk[rem] = true;
+      } catch { fetchOk[rem] = false; } // offline/sem credencial: segue com o que já tem localmente
+    }
+
+    let branch = "", ahead = 0, behind = 0, hasUpstream = false, compareRef = "", rastreado = false;
+    try { branch = (await execP(`git -C "${dir}" rev-parse --abbrev-ref HEAD`)).trim(); } catch {}
+    // Ref de comparação, em cascata: 1) upstream real do branch; 2) branch de mesmo
+    // nome em algum remote; 3) branch default do remote (HEAD/main/master).
+    // `rastreado` separa os dois primeiros casos (o branch tem par no remoto) do
+    // terceiro (comparação contra a baseline, o branch só existe aqui).
+    try {
+      compareRef = (await execP(`git -C "${dir}" rev-parse --abbrev-ref @{upstream}`)).trim();
+      hasUpstream = !!compareRef;
+      rastreado = hasUpstream;
+    } catch { /* sem upstream configurado */ }
+    if (!compareRef && branch) {
+      for (const rem of remotes) {
+        try {
+          await execP(`git -C "${dir}" rev-parse --verify --quiet ${rem}/${branch}`);
+          compareRef = `${rem}/${branch}`;
+          rastreado = true;
+          break;
+        } catch {}
+      }
+    }
+    if (!compareRef) {
+      for (const rem of remotes) {
+        for (const cand of [`${rem}/HEAD`, `${rem}/main`, `${rem}/master`]) {
+          try {
+            const r = (await execP(`git -C "${dir}" rev-parse --abbrev-ref ${cand}`)).trim();
+            if (r) { compareRef = r; break; }
+          } catch {}
+        }
+        if (compareRef) break;
+      }
+    }
+    if (compareRef) {
+      try {
+        const c = (await execP(`git -C "${dir}" rev-list --left-right --count HEAD...${compareRef}`)).trim();
+        const [a, b] = c.split(/\s+/).map((n) => parseInt(n, 10) || 0);
+        ahead = a;
+        behind = b;
+      } catch { compareRef = ""; }
+    }
+    // O aviso só vale se o remote usado na comparação foi de fato buscado agora.
+    const remoteUsado = compareRef.split("/")[0];
+    const verificado = !!compareRef && fetchOk[remoteUsado] === true;
+    resultado[alvo.id] = { nome: alvo.nome, branch, ahead, behind, hasUpstream, compareRef, rastreado, verificado };
+  }));
+  _gitCache.apps = resultado;
+  _gitCache.ts = Date.now();
+}
+
+function obterGitStatus() {
+  if (!_gitCache.checando && Date.now() - _gitCache.ts > GIT_TTL) {
+    _gitCache.checando = true;
+    atualizarGitCache().catch(() => {}).finally(() => { _gitCache.checando = false; });
+  }
+  return _gitCache.apps;
+}
+
+// ─── SSE: snapshot completo do estado (status + docker + conflitos + métricas + git) ───
 async function montarSnapshot() {
   const [status, docker, metricas] = await Promise.all([
     obterStatusCompleto(),
     checarDocker(),
     obterMetricas(),
   ]);
-  return { status, docker, conflitos: detectarConflitos(), metricas, ts: Date.now() };
+  return { status, docker, conflitos: detectarConflitos(), metricas, git: obterGitStatus(), ts: Date.now() };
 }
 
 const clientesStatus = new Set();
@@ -614,6 +814,13 @@ async function handler(req, res) {
       return res.end(JSON.stringify(conflitos));
     }
 
+    if (url.pathname === "/api/git-refresh" && req.method === "POST") {
+      _gitCache.ts = 0; // ignora o TTL — verificação sob demanda ("Verificar agora")
+      await atualizarGitCache().catch(() => {});
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(_gitCache.apps));
+    }
+
     if (url.pathname === "/api/portas" && req.method === "GET") {
       const registro = carregarRegistro();
       const mapa = [];
@@ -676,6 +883,19 @@ async function handler(req, res) {
       await new Promise((r) => setTimeout(r, 2000));
       const result = await iniciarServico(dados.appId, dados.svcId);
       res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(result));
+    }
+
+    // ── Controle do PRÓPRIO Manager ──
+    if (url.pathname === "/api/manager/reiniciar" && req.method === "POST") {
+      const result = await reiniciarManager();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(result));
+    }
+
+    if (url.pathname === "/api/manager/finalizar" && req.method === "POST") {
+      const result = await finalizarManager();
+      res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(JSON.stringify(result));
     }
 
@@ -788,22 +1008,27 @@ function lerBody(req) {
   });
 }
 
-// Um http.Server por porta (um único Server NÃO escuta em 2 portas).
+// Bootstrap: mata portas ocupadas ANTES do bind (evita duplicação) e sobe os
+// servidores. Um http.Server por porta (um único Server NÃO escuta em 2 portas).
 // Todos compartilham o mesmo handler. Porta ocupada não derruba o Manager.
-for (const porta of MANAGER_PORTS) {
-  const srv = http.createServer(handler);
-  srv.on("error", (e) => {
-    if (e.code === "EADDRINUSE") console.error(`[AVISO] Porta ${porta} em uso — não escutando nela.`);
-    else console.error(`[AVISO] Falha ao escutar em ${porta}: ${e.message}`);
-  });
-  srv.listen(porta, "0.0.0.0", () => {
-    console.log(`[OK] Escutando em http://192.168.0.47:${porta}  (local: http://localhost:${porta})`);
-  });
-}
+(async () => {
+  await liberarPortasNoBoot();
 
-console.log(`\n╔══════════════════════════════════════════════════╗`);
-console.log(`║   SERVER MANAGER - Central Contábil              ║`);
-console.log(`║   Portas: ${MANAGER_PORTS.join(", ")}                            ║`);
-console.log(`╚══════════════════════════════════════════════════╝`);
-console.log(`Dashboard (rede):  http://192.168.0.47:${MANAGER_PORT}`);
-console.log(`API:               http://192.168.0.47:${MANAGER_PORT}/api/status\n`);
+  for (const porta of MANAGER_PORTS) {
+    const srv = http.createServer(handler);
+    srv.on("error", (e) => {
+      if (e.code === "EADDRINUSE") console.error(`[AVISO] Porta ${porta} em uso — não escutando nela.`);
+      else console.error(`[AVISO] Falha ao escutar em ${porta}: ${e.message}`);
+    });
+    srv.listen(porta, "0.0.0.0", () => {
+      console.log(`[OK] Escutando em http://192.168.0.47:${porta}  (local: http://localhost:${porta})`);
+    });
+  }
+
+  console.log(`\n╔══════════════════════════════════════════════════╗`);
+  console.log(`║   SERVER MANAGER - Central Contábil              ║`);
+  console.log(`║   Portas: ${MANAGER_PORTS.join(", ")}   modo: ${SOB_RUNNER ? "serviço " : "standalone"}       ║`);
+  console.log(`╚══════════════════════════════════════════════════╝`);
+  console.log(`Dashboard (rede):  http://192.168.0.47:${MANAGER_PORT}`);
+  console.log(`API:               http://192.168.0.47:${MANAGER_PORT}/api/status\n`);
+})();

@@ -3,7 +3,8 @@
     "leia": "DOCUMENTACAO.md (secao 3) antes de editar.",
     "campos": "porta, tipo(frontend|backend|fullstack|infra), tecnologia, healthCheck, comando, cwd(relativo a server-manager/), pararComando(so Docker), env(opcional).",
     "docker": "Se 'tecnologia' ou 'comando' contem 'docker', o servico e Docker-aware: inicia com 'up -d' (sem matar porta) e para com 'pararComando'. NUNCA usar taskkill em porta de container.",
-    "ignorado": "Esta chave _doc e ignorada pelo server.mjs (so le apps e infraCompartilhada)."
+    "ignorado": "Esta chave _doc e ignorada pelo server.mjs (so le apps e infraCompartilhada).",
+    "reposVigiados": "Repos git vigiados no aviso de sync que nao sao apps do registro. Campos: id, nome, diretorio (relativo a server-manager/)."
   },
   "apps": {
     "dctf-web": {
@@ -278,5 +279,22 @@
       "healthCheck": "tcp://localhost:3306",
       "usadoPor": ["dctf-web", "regularizacao-cpf", "irpf2026"]
     }
-  }
+  },
+  "reposVigiados": [
+    {
+      "id": "server-manager",
+      "nome": "Server Manager",
+      "diretorio": "."
+    },
+    {
+      "id": "auth-token-server",
+      "nome": "Auth Token Server",
+      "diretorio": "../auth-token-server"
+    },
+    {
+      "id": "nfs-watch",
+      "nome": "NFS-WATCH",
+      "diretorio": "../NFS-WATCH"
+    }
+  ]
 }

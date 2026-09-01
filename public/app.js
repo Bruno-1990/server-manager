@@ -23,6 +23,13 @@ const ICONS = {
   layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
   info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
   network: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.07" y2="4.93"/>',
+  moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+  power: '<path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
 };
 function icon(nome) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[nome] || ""}</svg>`;
@@ -54,17 +61,38 @@ function montarAcentos() {
   aplicarAcento(cor);
 }
 
+// ─── Tema (claro/escuro) ───
+function cssVar(nome) { return getComputedStyle(document.documentElement).getPropertyValue(nome).trim(); }
+function aplicarTema(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  localStorage.setItem("sm-tema", t);
+  const btn = document.getElementById("btn-tema");
+  if (btn) {
+    btn.innerHTML = icon(t === "light" ? "moon" : "sun"); // ícone do tema-alvo
+    btn.title = t === "light" ? "Tema escuro" : "Tema claro";
+  }
+  aplicarCoresGrafico();
+}
+function alternarTema() {
+  const atual = document.documentElement.getAttribute("data-theme") || "dark";
+  aplicarTema(atual === "light" ? "dark" : "light");
+}
+
 // ─── Inicialização ───
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("brand-logo").innerHTML = icon("server");
   document.getElementById("search-icon").innerHTML = icon("search");
   document.getElementById("log-search-icon").innerHTML = icon("search");
   document.getElementById("btn-refresh").innerHTML = icon("refresh");
+  document.getElementById("btn-reiniciar-manager").innerHTML = icon("restart");
+  document.getElementById("btn-finalizar-manager").innerHTML = icon("power");
   document.getElementById("ico-metricas").innerHTML = icon("cpu");
   document.getElementById("ico-portas").innerHTML = icon("network");
   document.getElementById("toggle-metricas").innerHTML = icon("layers");
   document.getElementById("toggle-mapa-portas").innerHTML = icon("layers");
   montarAcentos();
+  aplicarTema(document.documentElement.getAttribute("data-theme") || "dark");
+  document.getElementById("btn-tema").addEventListener("click", alternarTema);
   montarSkeleton();
   conectarStream();
   atualizarRelogio();
@@ -72,6 +100,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("busca").addEventListener("input", (e) => { filtro = e.target.value; filtrarUI(); });
   document.getElementById("btn-refresh").addEventListener("click", forcarAtualizacao);
+  document.getElementById("btn-reiniciar-manager").addEventListener("click", reiniciarManager);
+  document.getElementById("btn-finalizar-manager").addEventListener("click", finalizarManager);
   document.getElementById("log-busca").addEventListener("input", renderLog);
   document.getElementById("log-wrap").addEventListener("change", (e) =>
     document.getElementById("modal-body").classList.toggle("nowrap", !e.target.checked));
@@ -95,6 +125,8 @@ function conectarStream() {
   stream.addEventListener("snapshot", (e) => {
     try { aplicarSnapshot(JSON.parse(e.data)); } catch {}
     setLive(true);
+    // Reconectou depois de um "Reiniciar": some com o overlay e libera o botão.
+    if (overlayReiniciando) { esconderOverlay(); setBtnOcupado("btn-reiniciar-manager", false); mostrarNotificacao("Server Manager reconectado", "success"); }
   });
   stream.onerror = () => setLive(false);
   stream.onopen = () => setLive(true);
@@ -111,6 +143,7 @@ function aplicarSnapshot(snap) {
   snapshot = snap;
   renderHero(snap);
   renderDocker(snap.docker);
+  renderGit(snap.git);
   renderConflitos(snap.conflitos);
   renderApps(snap.status);
   renderPortas(snap.status);
@@ -137,6 +170,18 @@ function detectarTransicoes(status) {
   prevOnline = atual;
 }
 
+// ─── Memória: parsing/format p/ agregado do sistema ───
+function parseMemMiB(str) {
+  // "66.22MiB / 3.825GiB" → usado em MiB
+  const m = String(str || "").split("/")[0].trim().match(/([\d.]+)\s*([KMGT]?i?B)/i);
+  if (!m) return 0;
+  const mult = { B: 1 / 1048576, KIB: 1 / 1024, MIB: 1, GIB: 1024, TIB: 1048576 };
+  return parseFloat(m[1]) * (mult[m[2].toUpperCase()] ?? 1);
+}
+function fmtMemMiB(mib) {
+  return mib >= 1024 ? (mib / 1024).toFixed(2) + " GiB" : Math.round(mib) + " MiB";
+}
+
 // ─── Hero / resumo ───
 function renderHero(snap) {
   const status = snap.status;
@@ -150,19 +195,40 @@ function renderHero(snap) {
   const dockerTxt = docker.rodando ? `v${docker.versao}` : (docker.instalado ? "desligado" : "ausente");
   const dockerCor = docker.rodando ? "var(--success)" : "var(--warning)";
 
+  const metricas = snap.metricas || [];
+  const cpuTotal = metricas.reduce((a, m) => a + (m.cpu || 0), 0);
+  const memTotal = metricas.reduce((a, m) => a + parseMemMiB(m.mem), 0);
+  const cargaCor = cpuTotal > 80 ? "var(--danger)" : cpuTotal > 40 ? "var(--warning)" : "var(--info)";
+
   const stats = [
-    { label: "Serviços online", valor: `${online}/${total}`, sub: `${total - online} offline`, icon: "activity", cor: online === total ? "var(--success)" : "var(--accent)" },
-    { label: "Aplicações", valor: apps, sub: "monitoradas", icon: "layers", cor: "var(--info)" },
-    { label: "Docker", valor: docker.rodando ? "ON" : "OFF", sub: dockerTxt, icon: "box", cor: dockerCor },
-    { label: "Conflitos", valor: conflitos, sub: conflitos ? "verificar portas" : "nenhum", icon: "alert", cor: conflitos ? "var(--danger)" : "var(--success)" },
+    { key: "servicos", label: "Serviços online", valor: `${online}/${total}`, sub: `${total - online} offline`, icon: "activity", cor: online === total ? "var(--success)" : "var(--accent)" },
+    { key: "apps", label: "Aplicações", valor: apps, sub: "monitoradas", icon: "layers", cor: "var(--info)" },
+    { key: "carga", label: "Carga containers", valor: metricas.length ? cpuTotal.toFixed(1) + "%" : "—", sub: metricas.length ? `${fmtMemMiB(memTotal)} • ${metricas.length} ativos` : "sem containers", icon: "cpu", cor: cargaCor },
+    { key: "docker", label: "Docker", valor: docker.rodando ? "ON" : "OFF", sub: dockerTxt, icon: "box", cor: dockerCor },
+    { key: "conflitos", label: "Conflitos", valor: conflitos, sub: conflitos ? "verificar portas" : "nenhum", icon: "alert", cor: conflitos ? "var(--danger)" : "var(--success)" },
   ];
-  document.getElementById("hero").innerHTML = stats.map((s) => `
-    <div class="stat" style="--stat-color:${s.cor}">
-      <div class="stat-icon">${icon(s.icon)}</div>
-      <div class="stat-label">${s.label}</div>
-      <div class="stat-value">${s.valor}</div>
-      <div class="stat-sub">${s.sub}</div>
-    </div>`).join("");
+
+  // Render incremental: monta a estrutura uma vez, depois só atualiza valores/cores.
+  const hero = document.getElementById("hero");
+  if (!hero.dataset.built) {
+    hero.innerHTML = stats.map((s) => `
+      <div class="stat" data-key="${s.key}" style="--stat-color:${s.cor}">
+        <div class="stat-icon">${icon(s.icon)}</div>
+        <div class="stat-label">${s.label}</div>
+        <div class="stat-value"></div>
+        <div class="stat-sub"></div>
+      </div>`).join("");
+    hero.dataset.built = "1";
+  }
+  for (const s of stats) {
+    const el = hero.querySelector(`.stat[data-key="${s.key}"]`);
+    if (!el) continue;
+    el.style.setProperty("--stat-color", s.cor);
+    const v = el.querySelector(".stat-value");
+    if (v.textContent !== String(s.valor)) v.textContent = s.valor;
+    const sub = el.querySelector(".stat-sub");
+    if (sub.textContent !== s.sub) sub.textContent = s.sub;
+  }
 }
 
 // ─── Apps (incremental por card) ───
@@ -172,6 +238,16 @@ function cardClass(app) {
   if (online === servicos.length && servicos.length) return "card-app card-online";
   if (online > 0) return "card-app card-parcial";
   return "card-app card-offline";
+}
+
+// Ordem de exibição: todos online (0) → parcial (1) → offline (2).
+// Usa CSS `order` p/ reordenar sem mexer no DOM (preserva cache/animação).
+function cardRank(app) {
+  const servicos = Object.values(app.servicos || {});
+  const online = servicos.filter((s) => s.online).length;
+  if (servicos.length && online === servicos.length) return 0;
+  if (online > 0) return 1;
+  return 2;
 }
 
 function renderApps(status) {
@@ -185,6 +261,7 @@ function renderApps(status) {
     let el = document.getElementById("card-" + appId);
     if (!el) { el = document.createElement("div"); el.id = "card-" + appId; grid.appendChild(el); }
     el.className = cardClass(app);
+    el.style.order = cardRank(app);
     el.dataset.filtro = textoBusca(appId, app);
     if (cardHtmlCache.get(appId) !== html) { el.innerHTML = html; cardHtmlCache.set(appId, html); }
   }
@@ -287,6 +364,104 @@ function renderDocker(docker) {
   secao.classList.remove("hidden");
 }
 
+// ─── Banner de atualização no remoto (git) ───
+const SYNC_CMD = "bash D:/aplicativos/centria/sync-local.sh";
+// navigator.clipboard só existe em HTTPS/localhost. Como o dashboard roda em
+// http://<IP>:9000 (contexto inseguro), usamos fallback via execCommand.
+function copiarParaClipboard(texto) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(texto).then(() => true).catch(() => fallbackCopy(texto));
+  }
+  return Promise.resolve(fallbackCopy(texto));
+}
+function fallbackCopy(texto) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = texto;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+async function copiarSync() {
+  const ok = await copiarParaClipboard(SYNC_CMD);
+  mostrarNotificacao(ok ? "Comando de sync copiado" : "Não foi possível copiar — copie manualmente", ok ? "success" : "danger");
+}
+async function verificarGit() {
+  const btn = document.getElementById("git-check-btn");
+  if (btn) { btn.disabled = true; btn.classList.add("girando"); }
+  try {
+    const res = await fetch("/api/git-refresh", { method: "POST" });
+    renderGit(await res.json());
+    mostrarNotificacao("Remoto verificado", "success");
+  } catch {
+    mostrarNotificacao("Falha ao verificar o remoto", "danger");
+  } finally {
+    const b = document.getElementById("git-check-btn");
+    if (b) { b.disabled = false; b.classList.remove("girando"); }
+  }
+}
+function renderGit(git) {
+  const secao = document.getElementById("secao-git");
+  const aviso = document.getElementById("aviso-git");
+  if (!secao || !aviso) return;
+  const apps = Object.entries(git || {}).filter(([, g]) => g);
+  const inbound = apps.filter(([, g]) => g.behind > 0);
+  const outbound = apps.filter(([, g]) => g.ahead > 0);
+  // Repo cujo fetch falhou (offline / sem credencial em cache) não pode passar por
+  // "em dia" — o 0/0 dele é só a ausência de informação nova.
+  const naoVerificados = apps.filter(([, g]) => g.verificado === false);
+  if (!inbound.length && !outbound.length && !naoVerificados.length) { secao.classList.add("hidden"); return; }
+
+  const chip = (g, n) => {
+    const soLocal = g.rastreado === false
+      ? `<small class="git-tag" title="branch ainda não existe no remoto — comparado com ${escapeHtml(g.compareRef || "?")}">só local</small>`
+      : "";
+    return `<span class="git-chip"><span class="git-chip-nome">${escapeHtml(g.nome)}</span><b>${n}</b><small title="branch">${escapeHtml(g.branch || "?")}</small>${soLocal}</span>`;
+  };
+  const inTot = inbound.reduce((s, [, g]) => s + g.behind, 0);
+  const outTot = outbound.reduce((s, [, g]) => s + g.ahead, 0);
+  const temCentria = inbound.some(([id]) => id === "centria");
+
+  const ladoIn = `
+    <div class="git-side git-in">
+      <div class="git-side-head">${icon("download")}<span>Trazer do remoto</span>${inbound.length ? `<em>${inTot}</em>` : ""}</div>
+      ${inbound.length
+        ? `<div class="git-chips">${inbound.map(([, g]) => chip(g, g.behind)).join("")}</div>
+           <div class="git-actions">${temCentria ? `<button class="git-btn primary" onclick="copiarSync()">${icon("copy")} Copiar sync seguro</button>` : ""}</div>`
+        : `<div class="git-empty">${icon("check")} Local em dia com o remoto</div>`}
+    </div>`;
+
+  const ladoOut = `
+    <div class="git-side git-out">
+      <div class="git-side-head">${icon("upload")}<span>Enviar para o remoto</span>${outbound.length ? `<em>${outTot}</em>` : ""}</div>
+      ${outbound.length
+        ? `<div class="git-chips">${outbound.map(([, g]) => chip(g, g.ahead)).join("")}</div>`
+        : `<div class="git-empty">${icon("check")} Nada local pendente de envio</div>`}
+    </div>`;
+
+  const alerta = naoVerificados.length
+    ? `<div class="git-warn">${icon("alert")}<span><strong>Sem verificar:</strong> ${naoVerificados
+        .map(([, g]) => escapeHtml(g.nome)).join(", ")} — remoto inacessível ou credencial fora do cache. Os números desses repos podem estar velhos.</span></div>`
+    : "";
+
+  aviso.innerHTML = `
+    <div class="git-split">${ladoIn}<div class="git-div"></div>${ladoOut}</div>
+    ${alerta}
+    <div class="git-foot">
+      <span class="git-pulse"></span>
+      <span class="git-foot-txt">verificação automática a cada 5 min</span>
+      <button class="git-btn tiny" id="git-check-btn" onclick="verificarGit()">${icon("refresh")} Verificar agora</button>
+    </div>`;
+  secao.classList.remove("hidden");
+}
+
 // ─── Mapa de portas ───
 function renderPortas(status) {
   const linhas = [];
@@ -371,6 +546,7 @@ function atualizarChart(metricas) {
   }));
 
   if (!cpuChart) {
+    const c = coresGrafico();
     const ctx = document.getElementById("chart-cpu").getContext("2d");
     cpuChart = new Chart(ctx, {
       type: "line",
@@ -378,10 +554,10 @@ function atualizarChart(metricas) {
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
         interaction: { mode: "nearest", intersect: false },
-        plugins: { legend: { display: true, labels: { color: "#8aa6bd", boxWidth: 8, boxHeight: 8, font: { size: 9 } } } },
+        plugins: { legend: { display: true, labels: { color: c.txt, boxWidth: 8, boxHeight: 8, font: { size: 9 } } } },
         scales: {
-          x: { ticks: { color: "#5d7689", font: { size: 9 }, maxTicksLimit: 6 }, grid: { color: "rgba(255,255,255,0.04)" } },
-          y: { beginAtZero: true, ticks: { color: "#5d7689", font: { size: 9 }, callback: (v) => v + "%" }, grid: { color: "rgba(255,255,255,0.04)" } },
+          x: { ticks: { color: c.dim, font: { size: 9 }, maxTicksLimit: 6 }, grid: { color: c.grid } },
+          y: { beginAtZero: true, ticks: { color: c.dim, font: { size: 9 }, callback: (v) => v + "%" }, grid: { color: c.grid } },
         },
       },
     });
@@ -390,6 +566,25 @@ function atualizarChart(metricas) {
     cpuChart.data.datasets = datasets;
     cpuChart.update("none");
   }
+}
+
+// Cores do gráfico a partir dos tokens do tema atual
+function coresGrafico() {
+  return {
+    txt: cssVar("--text-muted") || "#8aa6bd",
+    dim: cssVar("--text-dim") || "#5d7689",
+    grid: cssVar("--grid") || "rgba(255,255,255,0.05)",
+  };
+}
+function aplicarCoresGrafico() {
+  if (!cpuChart) return;
+  const c = coresGrafico();
+  cpuChart.options.plugins.legend.labels.color = c.txt;
+  cpuChart.options.scales.x.ticks.color = c.dim;
+  cpuChart.options.scales.x.grid.color = c.grid;
+  cpuChart.options.scales.y.ticks.color = c.dim;
+  cpuChart.options.scales.y.grid.color = c.grid;
+  cpuChart.update("none");
 }
 
 // ─── Busca / filtro ───
@@ -493,6 +688,68 @@ async function matarPorta(porta) {
   if (!confirm(`Matar processo(s) na porta ${porta}?`)) return;
   const res = await post("/api/matar-porta", { porta });
   mostrarNotificacao(res && res.ok ? `Porta ${porta} encerrada` : `Erro: ${res?.erro || "falha"}`, res && res.ok ? "warning" : "danger");
+}
+
+// ─── Overlay de espera ───
+let overlayReiniciando = false; // p/ esconder o overlay quando o stream reconectar
+function mostrarOverlay(titulo, msg, { encerrado = false } = {}) {
+  const ov = document.getElementById("overlay-manager");
+  document.getElementById("overlay-titulo").textContent = titulo;
+  document.getElementById("overlay-msg").textContent = msg || "";
+  ov.classList.toggle("encerrado", encerrado);
+  ov.classList.remove("hidden");
+}
+function esconderOverlay() {
+  overlayReiniciando = false;
+  document.getElementById("overlay-manager").classList.add("hidden");
+}
+function setBtnOcupado(id, ocupado) {
+  const b = document.getElementById(id);
+  if (!b) return;
+  b.disabled = ocupado;
+  b.classList.toggle("girando", ocupado);
+}
+
+// ─── Controle do PRÓPRIO Server Manager ───
+async function reiniciarManager() {
+  if (!confirm("Reiniciar o Server Manager?\n\nO dashboard vai cair por alguns segundos e reconectar sozinho.")) return;
+  setBtnOcupado("btn-reiniciar-manager", true);
+  setLive(false);
+  document.getElementById("live-label").textContent = "reiniciando…";
+  overlayReiniciando = true;
+  mostrarOverlay("Reiniciando o Server Manager…", "O dashboard vai cair por alguns segundos e reconectar sozinho.");
+  mostrarNotificacao("Reiniciando o Server Manager…", "warning");
+  const res = await post("/api/manager/reiniciar", {});
+  if (res && res.ok) {
+    // O EventSource reconecta sozinho quando as portas voltarem. Damos um empurrão.
+    setTimeout(forcarAtualizacao, 6000);
+    setTimeout(forcarAtualizacao, 10000);
+    // Rede de segurança: se em 30s não reconectar, some com o overlay assim mesmo.
+    setTimeout(() => { setBtnOcupado("btn-reiniciar-manager", false); if (overlayReiniciando) esconderOverlay(); }, 30000);
+  } else {
+    setBtnOcupado("btn-reiniciar-manager", false);
+    esconderOverlay();
+    mostrarNotificacao(`Falha ao reiniciar: ${res?.erro || "sem resposta"}`, "danger");
+  }
+}
+
+async function finalizarManager() {
+  if (!confirm("FINALIZAR o Server Manager?\n\nEle vai PARAR e NÃO volta sozinho — será preciso iniciá-lo manualmente (start.bat ou reiniciar/logar na máquina).\n\nConfirma?")) return;
+  setBtnOcupado("btn-finalizar-manager", true);
+  setLive(false);
+  document.getElementById("live-label").textContent = "finalizando…";
+  mostrarOverlay("Finalizando o Server Manager…", "Encerrando o serviço…");
+  mostrarNotificacao("Finalizando o Server Manager…", "danger");
+  const res = await post("/api/manager/finalizar", {});
+  if (res && res.ok) {
+    if (stream) { try { stream.close(); } catch {} stream = null; }
+    // Não volta sozinho: overlay fica como estado final "encerrado".
+    mostrarOverlay("Server Manager finalizado", "O painel está offline. Inicie o Manager manualmente (start.bat) ou reinicie/logue na máquina para voltar.", { encerrado: true });
+  } else {
+    setBtnOcupado("btn-finalizar-manager", false);
+    esconderOverlay();
+    mostrarNotificacao(`Falha ao finalizar: ${res?.erro || "sem resposta"}`, "danger");
+  }
 }
 
 // ─── Logs ao vivo (SSE) ───

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Server Manager — Central Contábil</title>
+  <script>try{document.documentElement.setAttribute("data-theme",localStorage.getItem("sm-tema")||"dark");}catch(e){}</script>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234a9cbd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='3' width='20' height='8' rx='2'/%3E%3Crect x='2' y='13' width='20' height='8' rx='2'/%3E%3Cline x1='6' y1='7' x2='6.01' y2='7'/%3E%3Cline x1='6' y1='17' x2='6.01' y2='17'/%3E%3C/svg%3E">
   <link rel="preload" href="vendor/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
@@ -28,8 +29,12 @@
     <div class="topbar-actions">
       <span class="live" id="live"><span class="live-dot"></span><span id="live-label">conectando…</span></span>
       <span id="relogio"></span>
+      <button class="btn btn-sm btn-icon btn-ghost" id="btn-tema" title="Alternar tema claro/escuro"></button>
       <div class="accent-picker" id="accent-picker" title="Cor de acento"></div>
       <button class="btn btn-sm btn-icon btn-ghost" id="btn-refresh" title="Atualizar agora"></button>
+      <span class="topbar-sep"></span>
+      <button class="btn btn-sm btn-icon btn-warning" id="btn-reiniciar-manager" title="Reiniciar o Server Manager"></button>
+      <button class="btn btn-sm btn-icon btn-danger" id="btn-finalizar-manager" title="Finalizar o Server Manager"></button>
     </div>
   </header>
 
@@ -40,6 +45,11 @@
     <!-- Aviso de Docker desligado -->
     <section id="secao-docker" class="secao hidden">
       <div id="aviso-docker" class="docker-aviso"></div>
+    </section>
+
+    <!-- Aviso de atualização no remoto (git) -->
+    <section id="secao-git" class="secao hidden">
+      <div id="aviso-git" class="git-aviso"></div>
     </section>
 
     <!-- Conflitos -->
@@ -110,6 +120,15 @@
         <button class="btn btn-sm btn-danger" onclick="limparLogs()">Limpar</button>
       </div>
       <pre id="modal-body" class="log-viewer"></pre>
+    </div>
+  </div>
+
+  <!-- Overlay de espera (reiniciar / finalizar o Manager) -->
+  <div id="overlay-manager" class="overlay-espera hidden">
+    <div class="overlay-box">
+      <div class="overlay-spinner" id="overlay-spinner"></div>
+      <div class="overlay-titulo" id="overlay-titulo">Reiniciando…</div>
+      <div class="overlay-msg" id="overlay-msg"></div>
     </div>
   </div>
 
