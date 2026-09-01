@@ -530,7 +530,7 @@ async function abrirEnvio(appId) {
   const listaEntram = d.entram.length
     ? `<ul class="git-lista">${d.entram.map((a) =>
         `<li><code>${escapeHtml(a.codigo)}</code> ${escapeHtml(a.caminho)}</li>`).join("")}</ul>`
-    : `<div class="git-empty">${icon("check")} Nada novo para commitar${d.ahead ? ` — só enviar os ${d.ahead} commit(s) prontos` : ""}</div>`;
+    : `<div class="git-empty">${icon("check")} Nada novo para commitar${d.porEnviar === -1 ? " — só enviar a branch, que ainda não existe no remoto" : d.porEnviar ? ` — só enviar os ${d.porEnviar} commit(s) prontos` : ""}</div>`;
 
   const listaFora = d.bloqueados.length
     ? `<div class="git-bloco-titulo">Fica de fora (${d.bloqueados.length})</div>
@@ -545,7 +545,7 @@ async function abrirEnvio(appId) {
     ${listaFora}
     <div class="git-nota">A mensagem do commit é escrita a partir do diff, na hora do envio.</div>`;
 
-  const semNada = !d.entram.length && !d.ahead;
+  const semNada = !d.entram.length && !d.porEnviar;
   foot.innerHTML = d.podeEscrever
     ? `<button class="git-btn primary" id="git-confirmar" onclick="confirmarEnvio('${appId}')" ${semNada || d.erroAlvo ? "disabled" : ""}>
          ${icon("upload")} ${d.entram.length ? "Commitar e enviar" : "Enviar"}
@@ -578,8 +578,11 @@ async function confirmarEnvio(appId) {
   const erro = r.ok ? "" : `<div class="git-warn">${icon("alert")}<span>${escapeHtml(r.erro || "falhou")}</span></div>`;
 
   body.innerHTML = `${erro}<ul class="git-passos">${passos}</ul>${msg}`;
-  document.getElementById("git-modal-foot").innerHTML =
-    `<button class="git-btn" onclick="fecharModalGit()">Fechar</button>`;
+  // Falhou depois do commit? O caminho é repetir, não fechar e ir pro terminal.
+  document.getElementById("git-modal-foot").innerHTML = r.ok
+    ? `<button class="git-btn" onclick="fecharModalGit()">Fechar</button>`
+    : `<button class="git-btn" onclick="fecharModalGit()">Fechar</button>
+       <button class="git-btn primary" onclick="abrirEnvio('${appId}')">${icon("refresh")} Tentar de novo</button>`;
   mostrarNotificacao(r.ok ? "Enviado" : "Falhou ao enviar", r.ok ? "success" : "danger");
   verificarGit().catch(() => {});
 }

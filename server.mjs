@@ -547,7 +547,15 @@ let _gitCache = { apps: {}, ts: 0, checando: false };
 
 function execP(cmd, opts = {}) {
   return new Promise((resolve, reject) => {
-    exec(cmd, { timeout: 20000, ...opts }, (err, stdout) => (err ? reject(err) : resolve(stdout || "")));
+    exec(cmd, { timeout: 20000, ...opts }, (err, stdout, stderr) => {
+      if (!err) return resolve(stdout || "");
+      // O Error do exec so traz "Command failed: <cmd>" — a razao de verdade fica
+      // nos argumentos, que se perdiam aqui. Sem isto, um push recusado chegava na
+      // tela como o comando repetido e mais nada.
+      err.stdout = stdout || "";
+      err.stderr = stderr || "";
+      reject(err);
+    });
   });
 }
 
@@ -746,12 +754,31 @@ async function detalheGit(appId) {
   }
   const push = await alvoPush(dir);
   const git = _gitCache.apps[appId] || {};
+
+  // Quantos commits faltam enviar, contados AGORA. O `ahead` do cache tem ate 5
+  // minutos de idade e, logo depois de um commit feito pelo painel, ainda diz
+  // zero — foi assim que um repo com commit pronto virou "nada a enviar".
+  // -1 = o branch ainda nao existe no remoto, entao tudo dele esta por enviar.
+  let porEnviar = 0;
+  if (push.remote && push.branchRemoto) {
+    let refRemota = true;
+    try { await execP(`git -C "${dir}" rev-parse --verify --quiet ${push.remote}/${push.branchRemoto}`); }
+    catch { refRemota = false; }
+    if (!refRemota) porEnviar = -1;
+    else {
+      try {
+        const n = await execP(`git -C "${dir}" rev-list --count ${push.remote}/${push.branchRemoto}..HEAD`);
+        porEnviar = parseInt(n.trim(), 10) || 0;
+      } catch {}
+    }
+  }
+
   return {
     ok: true, id: appId, nome: alvo.nome, dir,
     branch: push.branch || git.branch || "?",
     remote: push.remote, branchRemoto: push.branchRemoto, branchNovo: !!push.novo,
     erroAlvo: push.erro || null,
-    ahead: git.ahead || 0, behind: git.behind || 0,
+    porEnviar, ahead: git.ahead || 0, behind: git.behind || 0,
     entram, bloqueados,
   };
 }
@@ -847,19 +874,56 @@ async function gerarMensagem(dir, nome, entram) {
 // deixaria o repo commitado e nao enviado, sem motivo.
 const RECUSA_DE_CREDENCIAL =
   /Authentication failed|Invalid username or token|could not read Username|terminal prompts disabled/i;
+// GCM sem credencial guardada tenta abrir a JANELA de login. `GIT_TERMINAL_PROMPT=0`
+// nao impede isso — so corta o prompt de terminal — e num processo headless como o
+// Manager a janela nunca aparece para ninguem: o push fica pendurado ate o timeout
+// e volta "Command failed" sem uma linha de motivo. Com o bloqueio completo o git
+// desiste na hora e diz o que faltou.
+const SEM_INTERACAO = {
+  GIT_TERMINAL_PROMPT: "0",
+  GCM_INTERACTIVE: "Never",
+  GIT_ASKPASS: "echo",
+};
+const FALTA_CREDENCIAL = /Cannot prompt because user interactivity has been disabled|unable to get password|could not read (Username|Password)/i;
+
+// A saida util do git vem no stdout (o comando usa 2>&1); e.message so tem
+// "Command failed: <cmd>". Juntar os dois e o que da uma mensagem legivel na tela.
+function saidaDoErro(e) {
+  return [e.stdout, e.stderr, e.message].filter(Boolean).join("\n").trim();
+}
 
 async function empurrar(dir, flagU, remote, branch, branchRemoto, registrar) {
-  const cmd = `git -C "${dir}" push ${flagU}${remote} ${branch}:${branchRemoto} 2>&1`;
-  const opts = { timeout: 180000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } };
+  const cmd = `git -C "${dir}" -c credential.interactive=false push ${flagU}${remote} ${branch}:${branchRemoto} 2>&1`;
+  const opts = { timeout: 120000, env: { ...process.env, ...SEM_INTERACAO } };
   try {
     return await execP(cmd, opts);
   } catch (e) {
-    const saida = `${e.message || ""}\n${e.stdout || ""}`;
-    if (!RECUSA_DE_CREDENCIAL.test(saida)) throw e;
-    registrar("o remoto recusou a credencial na primeira tentativa; repetindo", "aviso");
-    return await execP(cmd, opts);
+    const saida = saidaDoErro(e);
+    // Token vencido: o GCM recusa a primeira e renova; a segunda passa.
+    if (RECUSA_DE_CREDENCIAL.test(saida) && !FALTA_CREDENCIAL.test(saida)) {
+      registrar("o remoto recusou a credencial na primeira tentativa; repetindo", "aviso");
+      try { return await execP(cmd, opts); } catch (e2) { throw new Error(erroDePush(e2, remote)); }
+    }
+    throw new Error(erroDePush(e, remote));
   }
 }
+
+function erroDePush(e, remote) {
+  const saida = saidaDoErro(e);
+  if (FALTA_CREDENCIAL.test(saida)) {
+    return `sem credencial de push em cache para o remoto "${remote}". `
+         + `Buscar funciona (repo publico busca sem login), mas enviar sempre exige credencial. `
+         + `Rodar uma vez, na maquina do Manager: node cache-git-creds.mjs`;
+  }
+  if (/non-fast-forward|fetch first|rejected/i.test(saida)) {
+    return `o remoto recusou: ha commit la que nao esta aqui. Trazer do remoto antes de enviar.\n\n${saida}`;
+  }
+  if (/ETIMEDOUT|timed out|Could not resolve host/i.test(saida)) {
+    return `nao deu para falar com o remoto (rede ou host fora do ar).\n\n${saida}`;
+  }
+  return saida || "o push falhou sem dizer o motivo";
+}
+
 // ─── Commitar + enviar ────────────────────────────────────────────────────────
 async function commitarEEnviar(appId) {
   const passos = [];
@@ -899,15 +963,26 @@ async function commitarEEnviar(appId) {
     } finally {
       try { fs.unlinkSync(arquivoMsg); } catch {}
     }
-  } else if (d.ahead > 0) {
-    registrar("nada novo para commitar — enviando o que ja estava commitado");
+  } else if (d.porEnviar !== 0) {
+    const quantos = d.porEnviar === -1 ? "branch inteira (nova no remoto)" : `${d.porEnviar} commit(s)`;
+    registrar(`nada novo para commitar — enviando ${quantos} que ja estava(m) commitado(s)`);
   } else {
     registrar("nada a commitar e nada a enviar", "ok");
     return { ok: true, semNada: true, passos, detalhe: d };
   }
 
+  // Push que falha depois do commit feito NAO pode voltar so o erro: quem clicou
+  // precisa ver que o commit existe e que basta reenviar. Por isso o log de passos
+  // e a mensagem gerada acompanham a falha.
   const flagU = branchNovo ? "-u " : "";
-  const saidaPush = await empurrar(dir, flagU, remote, branch, branchRemoto, registrar);
+  let saidaPush;
+  try {
+    saidaPush = await empurrar(dir, flagU, remote, branch, branchRemoto, registrar);
+  } catch (e) {
+    registrar(`o commit esta feito, mas nao foi enviado — clicar em Enviar de novo so refaz o push`, "aviso");
+    await atualizarGitCache().catch(() => {});
+    return { ok: false, erro: e.message, passos, mensagem, porIA };
+  }
   const linhaUtil = saidaPush.split(/\r?\n/).filter((l) => l.trim() && !/^remote:/.test(l)).pop();
   registrar(`enviado para ${remote}/${branchRemoto}${linhaUtil ? ` — ${linhaUtil.trim()}` : ""}`, "ok");
 

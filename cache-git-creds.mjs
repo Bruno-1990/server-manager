@@ -45,17 +45,31 @@ for (const alvo of alvos) {
 
   process.stdout.write(`\n== ${alvo.id}  (${dir}) ==\n`);
   for (const rem of remotes) {
+    // Buscar NAO prova que enviar vai funcionar: repo publico busca sem login
+    // nenhum, e nesse caso nada fica guardado. O `push --dry-run` e o que obriga
+    // o GCM a autenticar de verdade e gravar a credencial de escrita — sem enviar
+    // commit algum. E por isso que o painel achava o repo "verificado" e mesmo
+    // assim o botao Enviar morria sem credencial.
     try {
       execSync(`git -C "${dir}" fetch --prune --quiet ${rem}`, { stdio: "inherit" });
-      console.log(`   ${rem}: OK — credencial salva/validada`);
+      console.log(`   ${rem}: busca OK`);
+    } catch (e) {
+      console.log(`   ${rem}: busca FALHOU — ${(e.message || "").split("\n")[0]}`);
+      pendentes.push(`${alvo.id}/${rem} (busca)`);
+      falhou++;
+      continue;
+    }
+    try {
+      execSync(`git -C "${dir}" push --dry-run --quiet ${rem}`, { stdio: "inherit" });
+      console.log(`   ${rem}: envio OK — credencial salva/validada`);
       ok++;
     } catch (e) {
-      console.log(`   ${rem}: FALHOU — ${(e.message || "").split("\n")[0]}`);
-      pendentes.push(`${alvo.id}/${rem}`);
+      console.log(`   ${rem}: envio FALHOU — ${(e.message || "").split("\n")[0]}`);
+      pendentes.push(`${alvo.id}/${rem} (envio)`);
       falhou++;
     }
   }
 }
-console.log(`\nResumo: ${ok} remote(s) ok · ${falhou} falharam · ${pulados} repo(s) sem git/remote.`);
+console.log(`\nResumo: ${ok} remote(s) prontos para enviar · ${falhou} falharam · ${pulados} repo(s) sem git/remote.`);
 if (pendentes.length) console.log(`Ainda sem credencial: ${pendentes.join(", ")}`);
 console.log("As credenciais ficam no Gerenciador de Credenciais do Windows — persistem no reboot.");
