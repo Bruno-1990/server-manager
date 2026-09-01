@@ -417,7 +417,11 @@ function renderGit(git) {
   // Repo cujo fetch falhou (offline / sem credencial em cache) não pode passar por
   // "em dia" — o 0/0 dele é só a ausência de informação nova.
   const naoVerificados = apps.filter(([, g]) => g.verificado === false);
-  if (!inbound.length && !outbound.length && !naoVerificados.length) { secao.classList.add("hidden"); return; }
+  // Tem o que despachar: arquivo solto para commitar, ou commit pronto sem enviar.
+  const paraEnviar = apps.filter(([, g]) => (g.sujo || 0) > 0 || g.ahead > 0);
+  if (!inbound.length && !outbound.length && !naoVerificados.length && !paraEnviar.length) {
+    secao.classList.add("hidden"); return;
+  }
 
   const chip = (g, n) => {
     const soLocal = g.rastreado === false
@@ -446,6 +450,27 @@ function renderGit(git) {
         : `<div class="git-empty">${icon("check")} Nada local pendente de envio</div>`}
     </div>`;
 
+  // Uma linha por repo com trabalho parado, e o botão que fecha e despacha.
+  const linhaEnvio = ([id, g]) => {
+    const partes = [];
+    if (g.sujo > 0) partes.push(`${g.sujo} arquivo${g.sujo > 1 ? "s" : ""} sem commit`);
+    if (g.ahead > 0) partes.push(`${g.ahead} commit${g.ahead > 1 ? "s" : ""} sem enviar`);
+    return `
+      <div class="git-envio-linha">
+        <span class="git-envio-nome">${escapeHtml(g.nome)}</span>
+        <span class="git-envio-branch" title="branch">${escapeHtml(g.branch || "?")}</span>
+        <span class="git-envio-resumo">${partes.join(" · ")}</span>
+        <button class="git-btn tiny" onclick="abrirEnvio('${id}')">${icon("upload")} Enviar</button>
+      </div>`;
+  };
+
+  const blocoEnvio = paraEnviar.length
+    ? `<div class="git-envio">
+         <div class="git-side-head">${icon("upload")}<span>Fechar e enviar</span><em>${paraEnviar.length}</em></div>
+         ${paraEnviar.map(linhaEnvio).join("")}
+       </div>`
+    : "";
+
   const alerta = naoVerificados.length
     ? `<div class="git-warn">${icon("alert")}<span><strong>Sem verificar:</strong> ${naoVerificados
         .map(([, g]) => escapeHtml(g.nome)).join(", ")} — remoto inacessível ou credencial fora do cache. Os números desses repos podem estar velhos.</span></div>`
@@ -453,6 +478,7 @@ function renderGit(git) {
 
   aviso.innerHTML = `
     <div class="git-split">${ladoIn}<div class="git-div"></div>${ladoOut}</div>
+    ${blocoEnvio}
     ${alerta}
     <div class="git-foot">
       <span class="git-pulse"></span>
@@ -460,6 +486,102 @@ function renderGit(git) {
       <button class="git-btn tiny" id="git-check-btn" onclick="verificarGit()">${icon("refresh")} Verificar agora</button>
     </div>`;
   secao.classList.remove("hidden");
+}
+
+// ─── Commit + push pelo painel ───
+function fecharModalGit() {
+  document.getElementById("modal-git").classList.add("hidden");
+}
+function abrirModalGit(titulo) {
+  document.getElementById("git-modal-titulo").textContent = titulo;
+  document.getElementById("modal-git").classList.remove("hidden");
+}
+
+// Prévia antes de qualquer escrita: para onde vai, o que entra, o que fica fora.
+async function abrirEnvio(appId) {
+  abrirModalGit("Enviar");
+  const body = document.getElementById("git-modal-body");
+  const foot = document.getElementById("git-modal-foot");
+  body.innerHTML = `<div class="git-empty">Lendo o repositório…</div>`;
+  foot.innerHTML = "";
+  let d;
+  try {
+    const res = await fetch(`/api/git/detalhe?app=${encodeURIComponent(appId)}`);
+    d = await res.json();
+  } catch {
+    body.innerHTML = `<div class="git-warn">${icon("alert")}<span>Não deu para ler o repositório.</span></div>`;
+    return;
+  }
+  if (!d.ok) {
+    body.innerHTML = `<div class="git-warn">${icon("alert")}<span>${escapeHtml(d.erro || "erro")}</span></div>`;
+    return;
+  }
+  abrirModalGit(`Enviar — ${d.nome}`);
+
+  const destino = d.erroAlvo
+    ? `<div class="git-warn">${icon("alert")}<span>${escapeHtml(d.erroAlvo)}</span></div>`
+    : `<div class="git-destino">
+         <span class="git-destino-de">${escapeHtml(d.branch)}</span>
+         ${icon("upload")}
+         <span class="git-destino-para">${escapeHtml(d.remote)}/${escapeHtml(d.branchRemoto)}</span>
+         ${d.branchNovo ? `<small class="git-tag">branch nova</small>` : ""}
+       </div>`;
+
+  const listaEntram = d.entram.length
+    ? `<ul class="git-lista">${d.entram.map((a) =>
+        `<li><code>${escapeHtml(a.codigo)}</code> ${escapeHtml(a.caminho)}</li>`).join("")}</ul>`
+    : `<div class="git-empty">${icon("check")} Nada novo para commitar${d.ahead ? ` — só enviar os ${d.ahead} commit(s) prontos` : ""}</div>`;
+
+  const listaFora = d.bloqueados.length
+    ? `<div class="git-bloco-titulo">Fica de fora (${d.bloqueados.length})</div>
+       <ul class="git-lista git-lista-fora">${d.bloqueados.map((a) =>
+         `<li>${escapeHtml(a.caminho)} <small>${escapeHtml(a.motivo)}</small></li>`).join("")}</ul>`
+    : "";
+
+  body.innerHTML = `
+    ${destino}
+    <div class="git-bloco-titulo">Entra no commit (${d.entram.length})</div>
+    ${listaEntram}
+    ${listaFora}
+    <div class="git-nota">A mensagem do commit é escrita a partir do diff, na hora do envio.</div>`;
+
+  const semNada = !d.entram.length && !d.ahead;
+  foot.innerHTML = d.podeEscrever
+    ? `<button class="git-btn primary" id="git-confirmar" onclick="confirmarEnvio('${appId}')" ${semNada || d.erroAlvo ? "disabled" : ""}>
+         ${icon("upload")} ${d.entram.length ? "Commitar e enviar" : "Enviar"}
+       </button>`
+    : `<div class="git-warn">${icon("alert")}<span>Só dá para commitar e enviar a partir da máquina do Manager. Este navegador está em outro host.</span></div>`;
+}
+
+async function confirmarEnvio(appId) {
+  const btn = document.getElementById("git-confirmar");
+  const body = document.getElementById("git-modal-body");
+  if (btn) { btn.disabled = true; btn.classList.add("girando"); btn.innerHTML = `${icon("refresh")} Enviando…`; }
+  let r;
+  try {
+    const res = await fetch("/api/git/enviar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appId }),
+    });
+    r = await res.json();
+  } catch (e) {
+    r = { ok: false, erro: "a requisição falhou: " + e.message, passos: [] };
+  }
+
+  const passos = (r.passos || []).map((p) =>
+    `<li class="git-passo git-passo-${p.tipo || "info"}">${escapeHtml(p.texto)}</li>`).join("");
+  const msg = r.mensagem
+    ? `<div class="git-bloco-titulo">Mensagem do commit${r.porIA ? "" : " (resumo mecânico)"}</div>
+       <pre class="git-msg">${escapeHtml(r.mensagem)}</pre>`
+    : "";
+  const erro = r.ok ? "" : `<div class="git-warn">${icon("alert")}<span>${escapeHtml(r.erro || "falhou")}</span></div>`;
+
+  body.innerHTML = `${erro}<ul class="git-passos">${passos}</ul>${msg}`;
+  document.getElementById("git-modal-foot").innerHTML =
+    `<button class="git-btn" onclick="fecharModalGit()">Fechar</button>`;
+  mostrarNotificacao(r.ok ? "Enviado" : "Falhou ao enviar", r.ok ? "success" : "danger");
+  verificarGit().catch(() => {});
 }
 
 // ─── Mapa de portas ───

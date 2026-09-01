@@ -4,7 +4,8 @@
     "campos": "porta, tipo(frontend|backend|fullstack|infra), tecnologia, healthCheck, comando, cwd(relativo a server-manager/), pararComando(so Docker), env(opcional).",
     "docker": "Se 'tecnologia' ou 'comando' contem 'docker', o servico e Docker-aware: inicia com 'up -d' (sem matar porta) e para com 'pararComando'. NUNCA usar taskkill em porta de container.",
     "ignorado": "Esta chave _doc e ignorada pelo server.mjs (so le apps e infraCompartilhada).",
-    "reposVigiados": "Repos git vigiados no aviso de sync que nao sao apps do registro. Campos: id, nome, diretorio (relativo a server-manager/)."
+    "reposVigiados": "Repos git vigiados no aviso de sync que nao sao apps do registro. Campos: id, nome, diretorio (relativo a server-manager/).",
+    "arquivosProtegidos": "Caminhos que o commit pelo painel NUNCA inclui (adaptacoes locais). Ver WINDOWS-LOCAL.md secao 2 no caso do centria."
   },
   "apps": {
     "dctf-web": {
@@ -187,7 +188,13 @@
           "cwd": "../centria"
         }
       },
-      "dependencias": ["centria-postgresql", "centria-localstack"]
+      "dependencias": ["centria-postgresql", "centria-localstack"],
+      "arquivosProtegidos": [
+        "apps/backend-api/src/main/java/com/aap/accounting/application/service/TenantService.java",
+        "apps/web/src/app/pages/OnboardingPage.tsx",
+        "apps/backend-api/src/main/java/com/aap/accounting/application/service/fiscal/OrchestratorService.java",
+        "apps/backend-api/src/main/java/com/aap/accounting/domain/repository/InvoiceItemRepository.java"
+      ]
     },
     "scraping-ecac": {
       "nome": "Scraping eCAC (DCTFWeb)",

@@ -18,6 +18,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { exec, spawn } from "node:child_process";
 
@@ -44,6 +45,25 @@ process.on("unhandledRejection", (reason) => {
   console.error("[ERRO] unhandledRejection:", reason);
 });
 
+
+// ─── .env ao lado do server.mjs ───────────────────────────────────────────────
+// Sem dependencia: o Manager nao tem node_modules. Guarda a ANTHROPIC_API_KEY
+// (mensagem de commit) e o SM_GIT_LAN. O que ja veio do shell tem prioridade.
+function carregarEnvLocal() {
+  const arquivo = path.join(__dirname, ".env");
+  if (!fs.existsSync(arquivo)) return;
+  for (const linha of fs.readFileSync(arquivo, "utf8").split(/\r?\n/)) {
+    const t = linha.trim();
+    if (!t || t.startsWith("#")) continue;
+    const igual = t.indexOf("=");
+    if (igual < 1) continue;
+    const chave = t.slice(0, igual).trim();
+    let valor = t.slice(igual + 1).trim();
+    if (/^".*"$/.test(valor) || /^'.*'$/.test(valor)) valor = valor.slice(1, -1);
+    if (process.env[chave] === undefined) process.env[chave] = valor;
+  }
+}
+carregarEnvLocal();
 // ─── Carregar registro de portas ───
 function carregarRegistro() {
   const raw = fs.readFileSync(path.join(__dirname, "port-registry.json"), "utf8");
@@ -608,10 +628,16 @@ async function atualizarGitCache() {
         behind = b;
       } catch { compareRef = ""; }
     }
+    // Trabalho ainda nao commitado: e o que o botao Enviar do painel fecha.
+    let sujo = 0;
+    try {
+      sujo = (await execP(`git -C "${dir}" status --porcelain`, { maxBuffer: 8 * 1024 * 1024 }))
+        .split(/\r?\n/).filter((s) => s.trim()).length;
+    } catch {}
     // O aviso só vale se o remote usado na comparação foi de fato buscado agora.
     const remoteUsado = compareRef.split("/")[0];
     const verificado = !!compareRef && fetchOk[remoteUsado] === true;
-    resultado[alvo.id] = { nome: alvo.nome, branch, ahead, behind, hasUpstream, compareRef, rastreado, verificado };
+    resultado[alvo.id] = { nome: alvo.nome, branch, ahead, behind, hasUpstream, compareRef, rastreado, verificado, sujo };
   }));
   _gitCache.apps = resultado;
   _gitCache.ts = Date.now();
@@ -623,6 +649,269 @@ function obterGitStatus() {
     atualizarGitCache().catch(() => {}).finally(() => { _gitCache.checando = false; });
   }
   return _gitCache.apps;
+}
+
+// ─── Git: commitar e enviar pelo painel ────────────────────────────────────────
+// O painel fecha o trabalho solto e manda pro remoto certo, sem ninguem digitar
+// mensagem. O que protege: a lista de arquivos e SEMPRE explicita (nunca
+// `git add .`), segredo nao entra, arquivo marcado como protegido no registro
+// nao entra, e o push vai pro remoto/branch que a deteccao ja resolveu.
+
+// Nunca entram num commit feito pelo painel, em repo nenhum. `.env.dist` e
+// `.env.example` passam de proposito: sao gabaritos versionados, sem segredo.
+const NUNCA_COMMITAR = [
+  { re: /(^|\/)\.env$/i,                       motivo: "arquivo de ambiente com segredo" },
+  { re: /(^|\/)\.env\.(local|dev|prod|production|staging)$/i, motivo: "arquivo de ambiente com segredo" },
+  { re: /\.(pem|p12|pfx|key|keystore|jks)$/i,  motivo: "chave privada / certificado" },
+  { re: /(^|\/)id_(rsa|dsa|ecdsa|ed25519)/i,   motivo: "chave SSH" },
+  { re: /(^|\/)credentials?\.json$/i,          motivo: "credencial" },
+  { re: /(^|\/)(token|refresh_token)\.json$/i, motivo: "token de acesso" },
+  { re: /service[-_]?account.*\.json$/i,       motivo: "service account" },
+];
+
+function motivoBloqueio(caminho, protegidos) {
+  const p = caminho.replace(/\\/g, "/");
+  for (const { re, motivo } of NUNCA_COMMITAR) if (re.test(p)) return motivo;
+  for (const alvo of protegidos || []) {
+    const a = String(alvo).replace(/\\/g, "/");
+    if (p === a || p.endsWith("/" + a)) return "protegido no registro (adaptacao local)";
+  }
+  return null;
+}
+
+// Arquivos que o repo declara como "nunca vao pro remoto" — ex.: as adaptacoes
+// Windows do centria, listadas na secao 2 do WINDOWS-LOCAL.md.
+function protegidosDoApp(appId) {
+  const registro = carregarRegistro();
+  const alvo = registro.apps?.[appId] || (registro.reposVigiados || []).find((r) => r.id === appId);
+  return alvo?.arquivosProtegidos || [];
+}
+
+function alvoDoRegistro(appId) {
+  const registro = carregarRegistro();
+  if (registro.apps?.[appId]) {
+    return { id: appId, nome: registro.apps[appId].nome, diretorio: registro.apps[appId].diretorio };
+  }
+  return (registro.reposVigiados || []).find((r) => r.id === appId) || null;
+}
+
+// `git status --porcelain -z`: separador NUL evita quebrar em nome com espaco ou
+// acento. Em rename/copy o git manda o destino e, no token seguinte, a origem.
+async function arquivosDoRepo(dir) {
+  const bruto = await execP(`git -C "${dir}" status --porcelain -z`, { maxBuffer: 8 * 1024 * 1024 });
+  const tokens = bruto.split("\0").filter((t) => t.length);
+  const itens = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    const codigo = t.slice(0, 2);
+    const caminho = t.slice(3);
+    if (/^[RC]/.test(codigo)) i++; // o proximo token e a origem do rename
+    if (!caminho) continue;
+    itens.push({ caminho, codigo: codigo.trim() || "??" });
+  }
+  return itens;
+}
+
+// Para onde o push vai. Se o branch ja tem upstream, e ele. Se nao tem, e o
+// branch de mesmo nome no remoto principal — criado no push com `-u`.
+async function alvoPush(dir) {
+  const branch = (await execP(`git -C "${dir}" rev-parse --abbrev-ref HEAD`)).trim();
+  if (!branch || branch === "HEAD") return { erro: "repo em detached HEAD — sem branch para enviar" };
+  try {
+    const up = (await execP(`git -C "${dir}" rev-parse --abbrev-ref @{upstream}`)).trim();
+    const barra = up.indexOf("/");
+    if (barra > 0) {
+      return { branch, remote: up.slice(0, barra), branchRemoto: up.slice(barra + 1), novo: false };
+    }
+  } catch { /* sem upstream: cai no remoto principal abaixo */ }
+  const remotes = (await execP(`git -C "${dir}" remote`)).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (!remotes.length) return { erro: "repo sem remoto configurado" };
+  remotes.sort((a, b) => (a === "origin" ? -1 : b === "origin" ? 1 : 0));
+  return { branch, remote: remotes[0], branchRemoto: branch, novo: true };
+}
+
+async function detalheGit(appId) {
+  const alvo = alvoDoRegistro(appId);
+  if (!alvo?.diretorio) return { ok: false, erro: `app ${appId} nao esta no registro` };
+  const dir = path.resolve(__dirname, alvo.diretorio);
+  try { await execP(`git -C "${dir}" rev-parse --is-inside-work-tree`); }
+  catch { return { ok: false, erro: `${alvo.nome} nao e repositorio git` }; }
+
+  const protegidos = protegidosDoApp(appId);
+  const itens = await arquivosDoRepo(dir);
+  const entram = [], bloqueados = [];
+  for (const it of itens) {
+    const motivo = motivoBloqueio(it.caminho, protegidos);
+    if (motivo) bloqueados.push({ ...it, motivo }); else entram.push(it);
+  }
+  const push = await alvoPush(dir);
+  const git = _gitCache.apps[appId] || {};
+  return {
+    ok: true, id: appId, nome: alvo.nome, dir,
+    branch: push.branch || git.branch || "?",
+    remote: push.remote, branchRemoto: push.branchRemoto, branchNovo: !!push.novo,
+    erroAlvo: push.erro || null,
+    ahead: git.ahead || 0, behind: git.behind || 0,
+    entram, bloqueados,
+  };
+}
+
+// ─── Mensagem do commit, escrita a partir do diff ─────────────────────────────
+const MODELO_MENSAGEM = process.env.SM_COMMIT_MODEL || "claude-sonnet-5";
+const LIMITE_DIFF = 60000; // ~15k tokens de diff; acima disso o resumo ja basta
+
+function mensagemSemIA(nome, entram, stat) {
+  const escopo = entram.length === 1
+    ? entram[0].caminho.split("/").pop().replace(/\.[^.]+$/, "")
+    : `${entram.length} arquivos`;
+  const lista = entram.slice(0, 20).map((a) => `- ${a.caminho}`).join("\n");
+  const resto = entram.length > 20 ? `\n- ...e mais ${entram.length - 20}` : "";
+  return [
+    `chore(${nome}): atualiza ${escopo}`,
+    "",
+    "Commit feito pelo Server Manager sem ANTHROPIC_API_KEY configurada, entao",
+    "esta mensagem e o resumo mecanico do diff — vale revisar e reescrever.",
+    "",
+    lista + resto,
+    "",
+    stat.trim(),
+  ].join("\n");
+}
+
+async function gerarMensagem(dir, nome, entram) {
+  const stat = await execP(`git -C "${dir}" diff --cached --stat`).catch(() => "");
+  const chave = process.env.ANTHROPIC_API_KEY;
+  if (!chave) return { texto: mensagemSemIA(nome, entram, stat), porIA: false };
+
+  let diff = await execP(`git -C "${dir}" diff --cached`, { maxBuffer: 20 * 1024 * 1024 }).catch(() => "");
+  let truncado = false;
+  if (diff.length > LIMITE_DIFF) { diff = diff.slice(0, LIMITE_DIFF); truncado = true; }
+
+  const prompt = [
+    `Repositorio: ${nome}`,
+    "",
+    "Arquivos no commit:",
+    entram.map((a) => `- ${a.caminho} (${a.codigo})`).join("\n"),
+    "",
+    "Resumo do diff:",
+    stat.trim(),
+    "",
+    truncado ? "Diff (truncado no limite de tamanho):" : "Diff completo:",
+    "```diff",
+    diff,
+    "```",
+  ].join("\n");
+
+  const sistema = [
+    "Voce escreve mensagens de commit em portugues do Brasil, lendo o diff.",
+    "Formato: Conventional Commit. Primeira linha `tipo(escopo): resumo` com no maximo",
+    "72 caracteres, em minusculas, sem ponto final. Linha em branco. Depois um corpo",
+    "detalhado, em paragrafos curtos ou bullets, explicando O QUE mudou e principalmente",
+    "POR QUE — qual problema isso resolve, qual comportamento muda, o que alguem que ler",
+    "daqui a seis meses precisa saber. Cite nomes reais de arquivos, funcoes e campos.",
+    "Escreva apenas o que o diff sustenta: nao invente motivacao, ticket, numero nem teste.",
+    "Se o diff foi truncado, descreva o que da para ver e nao especule sobre o resto.",
+    "Responda SO com a mensagem do commit, sem cercas de codigo e sem preambulo.",
+  ].join(" ");
+
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": chave,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: MODELO_MENSAGEM,
+      max_tokens: 2000,
+      system: sistema,
+      messages: [{ role: "user", content: prompt }],
+    }),
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!resp.ok) {
+    const erro = await resp.text().catch(() => "");
+    throw new Error(`API da Anthropic devolveu ${resp.status}: ${erro.slice(0, 300)}`);
+  }
+  const corpo = await resp.json();
+  const texto = (corpo.content || [])
+    .filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+  if (!texto) throw new Error("a API respondeu sem texto");
+  return { texto: `${texto}\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n`, porIA: true };
+}
+
+// ─── Commitar + enviar ────────────────────────────────────────────────────────
+async function commitarEEnviar(appId) {
+  const passos = [];
+  const registrar = (texto, tipo = "info") => { passos.push({ texto, tipo }); };
+
+  const d = await detalheGit(appId);
+  if (!d.ok) return { ok: false, erro: d.erro, passos };
+  if (d.erroAlvo) return { ok: false, erro: d.erroAlvo, passos };
+
+  const { dir, nome, entram, bloqueados, remote, branch, branchRemoto, branchNovo } = d;
+  registrar(`${nome} — branch ${branch} -> ${remote}/${branchRemoto}${branchNovo ? " (branch nova no remoto)" : ""}`);
+  for (const b of bloqueados) registrar(`fora do commit: ${b.caminho} — ${b.motivo}`, "aviso");
+
+  let mensagem = null, porIA = false;
+  if (entram.length) {
+    // add explicito, arquivo a arquivo. `--` separa caminhos de opcoes: nome que
+    // comeca com hifen nao vira flag.
+    const lista = entram.map((a) => `"${a.caminho.replace(/"/g, '\\"')}"`).join(" ");
+    await execP(`git -C "${dir}" add -- ${lista}`, { maxBuffer: 4 * 1024 * 1024 });
+    registrar(`${entram.length} arquivo(s) preparado(s)`);
+
+    try {
+      const m = await gerarMensagem(dir, nome, entram);
+      mensagem = m.texto; porIA = m.porIA;
+      registrar(porIA ? `mensagem escrita a partir do diff (${MODELO_MENSAGEM})` : "mensagem mecanica — sem ANTHROPIC_API_KEY", porIA ? "info" : "aviso");
+    } catch (e) {
+      const stat = await execP(`git -C "${dir}" diff --cached --stat`).catch(() => "");
+      mensagem = mensagemSemIA(nome, entram, stat);
+      registrar(`nao deu para escrever a mensagem pela API (${e.message}); usando o resumo mecanico`, "aviso");
+    }
+
+    const arquivoMsg = path.join(os.tmpdir(), `sm-commit-${Date.now()}.txt`);
+    fs.writeFileSync(arquivoMsg, mensagem, "utf8");
+    try {
+      await execP(`git -C "${dir}" commit -F "${arquivoMsg}"`, { maxBuffer: 4 * 1024 * 1024 });
+      registrar(`commit criado: ${mensagem.split("\n")[0]}`, "ok");
+    } finally {
+      try { fs.unlinkSync(arquivoMsg); } catch {}
+    }
+  } else if (d.ahead > 0) {
+    registrar("nada novo para commitar — enviando o que ja estava commitado");
+  } else {
+    registrar("nada a commitar e nada a enviar", "ok");
+    return { ok: true, semNada: true, passos, detalhe: d };
+  }
+
+  const flagU = branchNovo ? "-u " : "";
+  const saidaPush = await execP(
+    `git -C "${dir}" push ${flagU}${remote} ${branch}:${branchRemoto} 2>&1`,
+    { timeout: 180000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
+  );
+  const linhaUtil = saidaPush.split(/\r?\n/).filter((l) => l.trim() && !/^remote:/.test(l)).pop();
+  registrar(`enviado para ${remote}/${branchRemoto}${linhaUtil ? ` — ${linhaUtil.trim()}` : ""}`, "ok");
+
+  await atualizarGitCache().catch(() => {});
+  return { ok: true, passos, mensagem, porIA };
+}
+
+// Escrita no git so de quem esta NESTA maquina — o painel responde para toda a
+// rede sem login, e commit/push escrevem no GitHub com a credencial daqui.
+// SM_GIT_LAN=1 abre para a rede inteira, se algum dia for o que se quer.
+function ipsDestaMaquina() {
+  const ips = new Set(["127.0.0.1", "::1", ""]);
+  for (const lista of Object.values(os.networkInterfaces() || {})) {
+    for (const ni of lista || []) ips.add(ni.address);
+  }
+  return ips;
+}
+function podeEscreverGit(req) {
+  if (process.env.SM_GIT_LAN === "1") return true;
+  const ip = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+  return ipsDestaMaquina().has(ip);
 }
 
 // ─── SSE: snapshot completo do estado (status + docker + conflitos + métricas + git) ───
@@ -814,6 +1103,40 @@ async function handler(req, res) {
       return res.end(JSON.stringify(conflitos));
     }
 
+
+    // ── Commit + push pelo painel ──
+    if (url.pathname === "/api/git/detalhe" && req.method === "GET") {
+      const appId = url.searchParams.get("app") || "";
+      const d = await detalheGit(appId);
+      d.podeEscrever = podeEscreverGit(req);
+      res.writeHead(d.ok ? 200 : 404, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(d));
+    }
+
+    if (url.pathname === "/api/git/enviar" && req.method === "POST") {
+      if (!podeEscreverGit(req)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({
+          ok: false,
+          erro: "commit e push so podem ser disparados desta maquina. O painel responde para "
+              + "a rede inteira sem login, e isto escreve no GitHub com a credencial daqui. "
+              + "Para liberar para a rede, subir o Manager com SM_GIT_LAN=1.",
+        }));
+      }
+      const dados = parseJsonSeguro(await lerBody(req));
+      if (!dados?.appId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, erro: "informe o appId" }));
+      }
+      try {
+        const r = await commitarEEnviar(dados.appId);
+        res.writeHead(r.ok ? 200 : 400, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify(r));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, erro: (e.message || String(e)).slice(0, 1000) }));
+      }
+    }
     if (url.pathname === "/api/git-refresh" && req.method === "POST") {
       _gitCache.ts = 0; // ignora o TTL — verificação sob demanda ("Verificar agora")
       await atualizarGitCache().catch(() => {});

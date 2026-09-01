@@ -479,6 +479,37 @@ tbody tr:hover { background: var(--hover); }
 .git-empty { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: var(--text-muted); }
 .git-empty svg { width: 14px; height: 14px; color: var(--success); }
 .git-tag { font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; opacity: 1 !important; padding: 0.05rem 0.34rem; border-radius: 999px; color: var(--warning, #d98324); background: color-mix(in srgb, var(--warning, #d98324) 18%, transparent); }
+.git-envio { margin-top: 0.8rem; padding-top: 0.7rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.4rem; }
+.git-envio .git-side-head, .git-envio .git-side-head svg { color: var(--warning, #d98324); }
+.git-envio .git-side-head em { background: color-mix(in srgb, var(--warning, #d98324) 20%, transparent); color: var(--warning, #d98324); }
+.git-envio-linha { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; padding: 0.35rem 0.5rem; border-radius: 8px; border: 1px solid var(--border); background: color-mix(in srgb, var(--text) 4%, transparent); }
+.git-envio-nome { font-size: 0.78rem; font-weight: 600; }
+.git-envio-branch { font-size: 0.66rem; opacity: 0.55; }
+.git-envio-resumo { font-size: 0.72rem; color: var(--text-muted); margin-left: auto; }
+.git-envio-linha .git-btn { flex-shrink: 0; }
+
+.modal-estreito { max-width: 720px; }
+.git-modal-body { padding: 0.9rem 1.1rem; overflow-y: auto; max-height: 62vh; font-size: 0.8rem; }
+.git-modal-foot { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 0.7rem 1.1rem; border-top: 1px solid var(--border); }
+.git-destino { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.5rem 0.7rem; border-radius: 9px; background: color-mix(in srgb, var(--accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+.git-destino svg { width: 15px; height: 15px; color: var(--accent); }
+.git-destino-de { font-weight: 600; }
+.git-destino-para { font-weight: 700; color: var(--accent); }
+.git-bloco-titulo { margin: 0.9rem 0 0.35rem; font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); }
+.git-lista { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.18rem; }
+.git-lista li { font-size: 0.75rem; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; word-break: break-all; }
+.git-lista code { font-size: 0.68rem; font-weight: 700; opacity: 0.6; margin-right: 0.35rem; }
+.git-lista-fora li { opacity: 0.75; text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--warning, #d98324) 70%, transparent); }
+.git-lista-fora small { margin-left: 0.4rem; opacity: 0.9; text-decoration: none; display: inline-block; font-family: system-ui, sans-serif; color: var(--warning, #d98324); }
+.git-nota { margin-top: 0.9rem; font-size: 0.72rem; color: var(--text-muted); }
+.git-passos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.git-passo { font-size: 0.76rem; padding-left: 1.1rem; position: relative; }
+.git-passo::before { content: "•"; position: absolute; left: 0; opacity: 0.5; }
+.git-passo-ok { color: var(--success); }
+.git-passo-ok::before { content: "✓"; opacity: 1; }
+.git-passo-aviso { color: var(--warning, #d98324); }
+.git-passo-aviso::before { content: "!"; font-weight: 800; opacity: 1; }
+.git-msg { margin: 0.35rem 0 0; padding: 0.7rem 0.8rem; border-radius: 9px; border: 1px solid var(--border); background: color-mix(in srgb, var(--text) 5%, transparent); font-size: 0.73rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 34vh; overflow-y: auto; }
 .git-warn { display: flex; align-items: flex-start; gap: 0.45rem; margin-top: 0.7rem; padding: 0.5rem 0.65rem; border-radius: 9px; font-size: 0.73rem; line-height: 1.35; color: var(--text-muted); border: 1px solid color-mix(in srgb, var(--warning, #d98324) 35%, transparent); background: color-mix(in srgb, var(--warning, #d98324) 10%, transparent); }
 .git-warn svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--warning, #d98324); }
 .git-warn strong { color: var(--text); }

@@ -165,6 +165,76 @@ Estrutura:
 
 ---
 
+## 4c. Aviso de sync git e envio pelo painel
+
+O painel vigia os repositórios de `D:\aplicativos` e mostra, num bloco no topo, o que falta
+trazer do remoto, o que falta enviar e o que está solto sem commit — e despacha o que está
+parado, com a mensagem do commit escrita a partir do diff.
+
+### Quem é vigiado
+
+Todo app do registro que seja repo git, **mais** os repos de `reposVigiados` (repos que não são
+apps — o próprio `server-manager`, o `auth-token-server`, o `NFS-WATCH`).
+
+### Como a comparação escolhe o alvo
+
+Em cascata, e **sem assumir o nome `origin`** (o `webapp` usa `webapp`, o `irpf2026` usa `bruno`,
+o `centria` tem `base` e `origin`):
+
+1. o upstream de verdade do branch (`@{upstream}`);
+2. o branch de mesmo nome em algum remoto (`<remoto>/<branch>`);
+3. o branch default do remoto (`<remoto>/HEAD`, `main`, `master`).
+
+Nos casos 1 e 2 o campo `rastreado` fica `true` — o branch tem par no remoto. No caso 3 fica
+`false` e a tela marca o chip como **"só local"**: o branch existe só nesta máquina e a conta
+está sendo feita contra a baseline.
+
+O `fetch` é feito **remoto a remoto** (`git fetch --prune <remoto>`), de forma não-interativa
+(`credential.interactive=false`, `GIT_TERMINAL_PROMPT=0`), para não abrir a janela do Git
+Credential Manager a cada ciclo. O remoto que falha marca `verificado: false`, e a tela avisa
+**"Sem verificar"** — sem isso, um repo cuja credencial saiu do cache aparecia 0/0, idêntico a
+um repo em dia.
+
+> Credencial fora do cache: rodar `node cache-git-creds.mjs` uma vez. Ele percorre todos os
+> repos vigiados e **todos os remotos de cada um**, abrindo a janela de login só de quem falta.
+
+### Envio (commit + push) pelo painel
+
+Botão **Enviar** por repo com trabalho parado. Abre uma prévia — destino, o que entra, o que
+fica fora — e só então escreve.
+
+- **Nunca dá `git add .`**: a lista de arquivos é montada de `git status --porcelain -z` e
+  passada explicitamente para o `git add --`.
+- **Segredo não entra**: `.env`, `.env.local/dev/prod`, `*.pem/p12/pfx/key`, chave SSH,
+  `credentials.json`, `token.json`, service account. (`.env.dist` e `.env.example` passam — são
+  gabaritos versionados.)
+- **Arquivo protegido não entra**: o campo `arquivosProtegidos` do app no registro. É o que
+  segura as adaptações Windows do `centria` (seção 2 do `WINDOWS-LOCAL.md`).
+- **Push sem força**, para o remoto/branch resolvido pela cascata. Branch que ainda não existe
+  no remoto sobe com `-u`.
+- **Só da máquina do Manager.** O painel responde para a rede inteira sem login; commit e push
+  escrevem no GitHub com a credencial daqui. A rota recusa requisição de outro host com 403.
+  Para liberar para a LAN, subir o Manager com `SM_GIT_LAN=1`.
+
+### Mensagem do commit
+
+Escrita a partir do diff staged pela API da Anthropic — Conventional Commit em português, com
+corpo explicando o porquê. Precisa de `ANTHROPIC_API_KEY` no `.env` ao lado do `server.mjs`
+(ignorado pelo git). O modelo é `claude-sonnet-5`, trocável por `SM_COMMIT_MODEL`.
+
+Sem chave, ou se a chamada falhar, o commit **ainda acontece** com um resumo mecânico do diff,
+marcado no próprio corpo como "vale revisar e reescrever" — o envio nunca fica preso à API.
+
+### Endpoints
+
+| Método | Rota | O que faz |
+|--------|------|-----------|
+| GET | `/api/git/detalhe?app=<id>` | Prévia: destino do push, arquivos que entram, arquivos bloqueados e o motivo. |
+| POST | `/api/git/enviar` | Commita o que pode e envia. Body `{ "appId": "<id>" }`. Devolve o log de passos e a mensagem gerada. |
+| POST | `/api/git-refresh` | Força o `fetch` de todos agora, sem esperar os 5 min. |
+
+---
+
 ## 5. Ciclo de vida: Node vs Docker
 
 > **ESTA É A PARTE MAIS IMPORTANTE.** O Manager trata dois tipos de serviço de
