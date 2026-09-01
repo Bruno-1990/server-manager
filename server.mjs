@@ -840,6 +840,26 @@ async function gerarMensagem(dir, nome, entram) {
   return { texto: `${texto}\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n`, porIA: true };
 }
 
+
+// O Git Credential Manager as vezes recusa a primeira tentativa com o token
+// vencido e so entao renova ("Invalid username or token"). Uma segunda tentativa
+// passa. Como o commit ja foi criado a esta altura, deixar morrer na primeira
+// deixaria o repo commitado e nao enviado, sem motivo.
+const RECUSA_DE_CREDENCIAL =
+  /Authentication failed|Invalid username or token|could not read Username|terminal prompts disabled/i;
+
+async function empurrar(dir, flagU, remote, branch, branchRemoto, registrar) {
+  const cmd = `git -C "${dir}" push ${flagU}${remote} ${branch}:${branchRemoto} 2>&1`;
+  const opts = { timeout: 180000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } };
+  try {
+    return await execP(cmd, opts);
+  } catch (e) {
+    const saida = `${e.message || ""}\n${e.stdout || ""}`;
+    if (!RECUSA_DE_CREDENCIAL.test(saida)) throw e;
+    registrar("o remoto recusou a credencial na primeira tentativa; repetindo", "aviso");
+    return await execP(cmd, opts);
+  }
+}
 // ─── Commitar + enviar ────────────────────────────────────────────────────────
 async function commitarEEnviar(appId) {
   const passos = [];
@@ -887,10 +907,7 @@ async function commitarEEnviar(appId) {
   }
 
   const flagU = branchNovo ? "-u " : "";
-  const saidaPush = await execP(
-    `git -C "${dir}" push ${flagU}${remote} ${branch}:${branchRemoto} 2>&1`,
-    { timeout: 180000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
-  );
+  const saidaPush = await empurrar(dir, flagU, remote, branch, branchRemoto, registrar);
   const linhaUtil = saidaPush.split(/\r?\n/).filter((l) => l.trim() && !/^remote:/.test(l)).pop();
   registrar(`enviado para ${remote}/${branchRemoto}${linhaUtil ? ` — ${linhaUtil.trim()}` : ""}`, "ok");
 
