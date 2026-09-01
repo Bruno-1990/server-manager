@@ -911,9 +911,11 @@ async function empurrar(dir, flagU, remote, branch, branchRemoto, registrar) {
 function erroDePush(e, remote) {
   const saida = saidaDoErro(e);
   if (FALTA_CREDENCIAL.test(saida)) {
-    return `sem credencial de push em cache para o remoto "${remote}". `
-         + `Buscar funciona (repo publico busca sem login), mas enviar sempre exige credencial. `
-         + `Rodar uma vez, na maquina do Manager: node cache-git-creds.mjs`;
+    return `sem credencial de push utilizavel para o remoto "${remote}", e o Manager roda headless: `
+         + `nao ha janela de login para responder. Ou nunca houve credencial de escrita (repo publico `
+         + `busca sem login nenhum, entao nada chega a ser guardado), ou a que existia foi recusada `
+         + `pelo GitHub agora e o Credential Manager a apagou — que e o comportamento normal dele com `
+         + `token vencido ou revogado. Rodar uma vez, na maquina do Manager: node cache-git-creds.mjs`;
   }
   if (/non-fast-forward|fetch first|rejected/i.test(saida)) {
     return `o remoto recusou: ha commit la que nao esta aqui. Trazer do remoto antes de enviar.\n\n${saida}`;
