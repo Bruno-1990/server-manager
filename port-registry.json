@@ -148,7 +148,7 @@
           "tipo": "backend",
           "tecnologia": "Spring Boot (Java)",
           "healthCheck": "http://localhost:8091/actuator/health",
-          "comando": "make run-api",
+          "comando": "\"C:\\Program Files\\Git\\bin\\bash.exe\" \"D:\\aplicativos\\server-manager\\run-centria-api.sh\"",
           "cwd": "../centria"
         },
         "frontend": {
@@ -156,7 +156,7 @@
           "tipo": "frontend",
           "tecnologia": "Vite + React",
           "healthCheck": "http://localhost:5180",
-          "comando": "make run-web",
+          "comando": "\"C:\\Program Files\\Git\\bin\\bash.exe\" \"D:\\aplicativos\\server-manager\\run-centria-web.sh\"",
           "cwd": "../centria"
         },
         "postgresql": {
@@ -175,6 +175,14 @@
           "healthCheck": "http://localhost:24666/_localstack/health",
           "comando": "docker network create bubble 2>nul & docker compose -f apps/backend-api/infra/docker-compose.yaml up -d",
           "pararComando": "docker compose -f apps/backend-api/infra/docker-compose.yaml stop",
+          "cwd": "../centria"
+        },
+        "orchestrator": {
+          "porta": 8092,
+          "tipo": "backend",
+          "tecnologia": "Task Orchestrator (Python)",
+          "healthCheck": "http://localhost:8092/health",
+          "comando": "\"C:\\Program Files\\Git\\bin\\bash.exe\" \"D:\\aplicativos\\server-manager\\run-centria-orchestrator.sh\"",
           "cwd": "../centria"
         }
       },
