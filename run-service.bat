@@ -76,6 +76,9 @@ echo [%date% %time%] Stack do webapp no ar. >> "%LOG%"
 :dockerdone
 
 :: --- Loop keep-alive do server.mjs (reinicia sempre que terminar) ---
+:: SM_RUNNER=service avisa o server.mjs que ele roda sob keep-alive: o botao
+:: "Reiniciar" so precisa sair (este loop religa) em vez de subir outra instancia.
+set "SM_RUNNER=service"
 :runloop
 echo [%date% %time%] Iniciando node server.mjs... >> "%LOG%"
 node server.mjs >> "%LOG%" 2>&1

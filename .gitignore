@@ -13,3 +13,6 @@ node_modules/
 # Windows
 Thumbs.db
 Desktop.ini
+
+# Helpers gerados em runtime pelos botoes Reiniciar/Finalizar do Manager
+_sm-*.cmd
