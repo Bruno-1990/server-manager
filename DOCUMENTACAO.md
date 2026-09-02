@@ -195,8 +195,19 @@ Credential Manager a cada ciclo. O remoto que falha marca `verificado: false`, e
 **"Sem verificar"** — sem isso, um repo cuja credencial saiu do cache aparecia 0/0, idêntico a
 um repo em dia.
 
-> Credencial fora do cache: rodar `node cache-git-creds.mjs` uma vez. Ele percorre todos os
-> repos vigiados e **todos os remotos de cada um**, abrindo a janela de login só de quem falta.
+> **Credencial fora do cache.** `node cache-git-creds.mjs` roda o diagnóstico: `fetch` mais
+> `push --dry-run` em cada remoto de cada repo vigiado, separando os quatro motivos de falha —
+> credencial, permissão negada, branch atrás do remoto e outros. Só o primeiro se resolve com
+> credencial nova; tratar todos como "sem credencial" manda para o lado errado.
+>
+> Para gravar um Personal Access Token nos remotos de uma conta de uma vez, sem abrir janela:
+> `node cache-git-creds.mjs --token [--owner=<conta>]`. O token nunca vem por argumento (fica no
+> histórico do shell e na lista de processos) — vem de `--arquivo=<caminho>` (apagado assim que
+> lido), de `GH_TOKEN`/`GITHUB_TOKEN`, ou do prompt de digitação oculta quando há terminal.
+>
+> Como as credenciais são gravadas por caminho (`useHttpPath=true`, que é o que mantém contas
+> diferentes separadas nesta máquina), o mesmo token precisa ser gravado uma vez por repositório
+> — é justamente isso que o `--token` faz de uma tacada.
 
 ### Envio (commit + push) pelo painel
 
