@@ -747,9 +747,29 @@ async function detalheGit(appId) {
 
   const protegidos = protegidosDoApp(appId);
   const itens = await arquivosDoRepo(dir);
+
+  // Submodulo (modo 160000 no indice) nao e arquivo: o que entraria no commit e
+  // um ponteiro de sha. Commitar isso sozinho, com mensagem escrita de um diff
+  // que nem mostra conteudo, e pedir confusao — ainda mais quando e um gitlink
+  // orfao, sem .gitmodules (caso do SPED/SPED). Fica de fora por padrao.
+  const gitlinks = new Set();
+  if (itens.length) {
+    const lista = itens.map((a) => `"${a.caminho.replace(/"/g, '\\"')}"`).join(" ");
+    try {
+      const saida = await execP(`git -C "${dir}" ls-files -s -- ${lista}`, { maxBuffer: 8 * 1024 * 1024 });
+      for (const linha of saida.split(/\r?\n/)) {
+        if (!linha.startsWith("160000")) continue;
+        const tab = linha.indexOf("\t");
+        if (tab > 0) gitlinks.add(linha.slice(tab + 1).trim());
+      }
+    } catch { /* sem índice legível: segue sem a marcação */ }
+  }
+
   const entram = [], bloqueados = [];
   for (const it of itens) {
-    const motivo = motivoBloqueio(it.caminho, protegidos);
+    const motivo = gitlinks.has(it.caminho)
+      ? "submódulo — o commit seria só um ponteiro de sha"
+      : motivoBloqueio(it.caminho, protegidos);
     if (motivo) bloqueados.push({ ...it, motivo }); else entram.push(it);
   }
   const push = await alvoPush(dir);
@@ -759,7 +779,7 @@ async function detalheGit(appId) {
   // minutos de idade e, logo depois de um commit feito pelo painel, ainda diz
   // zero — foi assim que um repo com commit pronto virou "nada a enviar".
   // -1 = o branch ainda nao existe no remoto, entao tudo dele esta por enviar.
-  let porEnviar = 0;
+  let porEnviar = 0, porTrazer = 0;
   if (push.remote && push.branchRemoto) {
     let refRemota = true;
     try { await execP(`git -C "${dir}" rev-parse --verify --quiet ${push.remote}/${push.branchRemoto}`); }
@@ -770,6 +790,12 @@ async function detalheGit(appId) {
         const n = await execP(`git -C "${dir}" rev-list --count ${push.remote}/${push.branchRemoto}..HEAD`);
         porEnviar = parseInt(n.trim(), 10) || 0;
       } catch {}
+      // Commit que existe la e nao aqui. Com isto > 0 o push SERA recusado por
+      // non-fast-forward, entao a previa avisa antes de o commit ser feito a toa.
+      try {
+        const n = await execP(`git -C "${dir}" rev-list --count HEAD..${push.remote}/${push.branchRemoto}`);
+        porTrazer = parseInt(n.trim(), 10) || 0;
+      } catch {}
     }
   }
 
@@ -778,7 +804,7 @@ async function detalheGit(appId) {
     branch: push.branch || git.branch || "?",
     remote: push.remote, branchRemoto: push.branchRemoto, branchNovo: !!push.novo,
     erroAlvo: push.erro || null,
-    porEnviar, ahead: git.ahead || 0, behind: git.behind || 0,
+    porEnviar, porTrazer, ahead: git.ahead || 0, behind: git.behind || 0,
     entram, bloqueados,
   };
 }
@@ -990,6 +1016,58 @@ async function commitarEEnviar(appId) {
 
   await atualizarGitCache().catch(() => {});
   return { ok: true, passos, mensagem, porIA };
+}
+
+
+// ─── Trazer do remoto (só fast-forward) ──────────────────────────────────────
+// `--ff-only` é a escolha deliberada: ou o histórico local é um prefixo do
+// remoto e o merge é um avanço de ponteiro, ou o git recusa e nada acontece. O
+// painel nunca vai criar merge nem deixar conflito para alguém resolver pela
+// web; divergência de verdade continua sendo assunto de terminal.
+async function trazerDoRemoto(appId) {
+  const passos = [];
+  const registrar = (texto, tipo = "info") => { passos.push({ texto, tipo }); };
+
+  const d = await detalheGit(appId);
+  if (!d.ok) return { ok: false, erro: d.erro, passos };
+  if (d.erroAlvo) return { ok: false, erro: d.erroAlvo, passos };
+  if (!d.porTrazer) { registrar("nada a trazer — já está em dia com o remoto", "ok"); return { ok: true, passos }; }
+
+  const { dir, nome, remote, branch, branchRemoto } = d;
+  registrar(`${nome} — trazendo ${d.porTrazer} commit(s) de ${remote}/${branchRemoto}`);
+
+  // Trabalho solto não impede um fast-forward, mas impede se tocar nos mesmos
+  // arquivos que vêm. Avisar antes é mais honesto do que deixar o git recusar.
+  if (d.entram.length) {
+    registrar(`${d.entram.length} arquivo(s) sem commit aqui — o git recusa se algum deles for tocado pelo que vem`, "aviso");
+  }
+
+  try {
+    const saida = await execP(
+      `git -C "${dir}" -c credential.interactive=false pull --ff-only ${remote} ${branchRemoto} 2>&1`,
+      { timeout: 120000, env: { ...process.env, ...SEM_INTERACAO } }
+    );
+    const linha = saida.split(/\r?\n/).filter((l) => l.trim()).pop();
+    registrar(`trazido${linha ? ` — ${linha.trim()}` : ""}`, "ok");
+  } catch (e) {
+    const saida = saidaDoErro(e);
+    if (/not possible to fast-forward|diverged/i.test(saida)) {
+      throw new Error(
+        `os históricos divergiram: há commit aqui que não está no remoto e vice-versa. ` +
+        `Fast-forward não resolve isso, e o painel não faz merge — resolver no terminal, em ${dir}`
+      );
+    }
+    if (/local changes .* would be overwritten|Please commit your changes/i.test(saida)) {
+      throw new Error(
+        `há alteração sem commit nos mesmos arquivos que vêm do remoto. ` +
+        `Commitar primeiro (botão Enviar comita, mas o push só passa depois desta atualização), ou guardar à mão.`
+      );
+    }
+    throw new Error(saida || "não deu para trazer do remoto");
+  }
+
+  await atualizarGitCache().catch(() => {});
+  return { ok: true, passos };
 }
 
 // Escrita no git so de quem esta NESTA maquina — o painel responde para toda a
@@ -1205,6 +1283,26 @@ async function handler(req, res) {
       d.podeEscrever = podeEscreverGit(req);
       res.writeHead(d.ok ? 200 : 404, { "Content-Type": "application/json" });
       return res.end(JSON.stringify(d));
+    }
+
+    if (url.pathname === "/api/git/trazer" && req.method === "POST") {
+      if (!podeEscreverGit(req)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, erro: "so a partir da maquina do Manager." }));
+      }
+      const dados = parseJsonSeguro(await lerBody(req));
+      if (!dados?.appId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, erro: "informe o appId" }));
+      }
+      try {
+        const r = await trazerDoRemoto(dados.appId);
+        res.writeHead(r.ok ? 200 : 400, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify(r));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, erro: (e.message || String(e)).slice(0, 1000) }));
+      }
     }
 
     if (url.pathname === "/api/git/enviar" && req.method === "POST") {

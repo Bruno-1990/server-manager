@@ -538,19 +538,63 @@ async function abrirEnvio(appId) {
          `<li>${escapeHtml(a.caminho)} <small>${escapeHtml(a.motivo)}</small></li>`).join("")}</ul>`
     : "";
 
+  // Commit no remoto que não está aqui = push recusado por non-fast-forward.
+  // Avisar antes evita fazer o commit à toa e só descobrir na hora do envio.
+  const atrasado = d.porTrazer > 0
+    ? `<div class="git-warn">${icon("alert")}<span><strong>O remoto está ${d.porTrazer} commit(s) à frente.</strong>
+         Enviar agora vai commitar e o push será recusado. Traga o que falta primeiro.</span></div>`
+    : "";
+
   body.innerHTML = `
     ${destino}
+    ${atrasado}
     <div class="git-bloco-titulo">Entra no commit (${d.entram.length})</div>
     ${listaEntram}
     ${listaFora}
     <div class="git-nota">A mensagem do commit é escrita a partir do diff, na hora do envio.</div>`;
 
   const semNada = !d.entram.length && !d.porEnviar;
-  foot.innerHTML = d.podeEscrever
-    ? `<button class="git-btn primary" id="git-confirmar" onclick="confirmarEnvio('${appId}')" ${semNada || d.erroAlvo ? "disabled" : ""}>
-         ${icon("upload")} ${d.entram.length ? "Commitar e enviar" : "Enviar"}
+  // Com o remoto à frente, trazer vem antes — é o botão em destaque, e o de
+  // enviar continua disponível para quem quiser mesmo assim.
+  const botaoTrazer = d.porTrazer > 0
+    ? `<button class="git-btn primary" id="git-trazer" onclick="trazerDoRemoto('${appId}')">
+         ${icon("download")} Trazer ${d.porTrazer} do remoto
        </button>`
+    : "";
+  foot.innerHTML = d.podeEscrever
+    ? `<button class="git-btn ${d.porTrazer > 0 ? "" : "primary"}" id="git-confirmar" onclick="confirmarEnvio('${appId}')" ${semNada || d.erroAlvo ? "disabled" : ""}>
+         ${icon("upload")} ${d.entram.length ? "Commitar e enviar" : "Enviar"}
+       </button>
+       ${botaoTrazer}`
     : `<div class="git-warn">${icon("alert")}<span>Só dá para commitar e enviar a partir da máquina do Manager. Este navegador está em outro host.</span></div>`;
+}
+
+// Traz o que falta, só fast-forward. Ao terminar reabre a prévia: o número de
+// commits a enviar muda, e o aviso de atraso some.
+async function trazerDoRemoto(appId) {
+  const btn = document.getElementById("git-trazer");
+  if (btn) { btn.disabled = true; btn.classList.add("girando"); btn.innerHTML = `${icon("refresh")} Trazendo…`; }
+  let r;
+  try {
+    const res = await fetch("/api/git/trazer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appId }),
+    });
+    r = await res.json();
+  } catch (e) {
+    r = { ok: false, erro: "a requisição falhou: " + e.message, passos: [] };
+  }
+  mostrarNotificacao(r.ok ? "Trazido do remoto" : "Não deu para trazer", r.ok ? "success" : "danger");
+  if (r.ok) { verificarGit().catch(() => {}); return abrirEnvio(appId); }
+
+  const passos = (r.passos || []).map((p) =>
+    `<li class="git-passo git-passo-${p.tipo || "info"}">${escapeHtml(p.texto)}</li>`).join("");
+  document.getElementById("git-modal-body").innerHTML =
+    `<div class="git-warn">${icon("alert")}<span>${escapeHtml(r.erro || "falhou")}</span></div>
+     <ul class="git-passos">${passos}</ul>`;
+  document.getElementById("git-modal-foot").innerHTML =
+    `<button class="git-btn" onclick="fecharModalGit()">Fechar</button>`;
 }
 
 async function confirmarEnvio(appId) {
