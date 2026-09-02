@@ -45,6 +45,7 @@ const alvos = [
 
 const args = process.argv.slice(2);
 const MODO_TOKEN = args.includes("--token");
+const MODO_PERMISSOES = args.includes("--permissoes");
 const DONO = (args.find((a) => a.startsWith("--owner=")) || "--owner=Bruno-1990").split("=")[1];
 
 // ─── Remotes de todos os repos vigiados ──────────────────────────────────────
@@ -165,6 +166,107 @@ function gravarCredencial(url, usuario, token) {
   execSync("git credential approve", { input: entrada, stdio: ["pipe", "ignore", "inherit"] });
 }
 
+// ─── Modo --permissoes: pergunta ao GitHub o que o token guardado pode fazer ──
+// Um 403 no push nao diz SE o problema e o repositorio nao selecionado, a
+// permissao Contents em read-only ou o token errado guardado. A API responde
+// isso de forma direta, em `permissions.push` de cada repo. O token e lido do
+// cofre pelo proprio git e fica so em memoria — nao e impresso em lugar nenhum.
+function credencialDe(url) {
+  const u = new URL(url);
+  const pergunta = [
+    `protocol=${u.protocol.replace(":", "")}`,
+    `host=${u.host}`,
+    `path=${u.pathname.replace(/^\//, "")}`,
+    "", "",
+  ].join("\n");
+  const saida = execSync("git credential fill", { input: pergunta, encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] });
+  const campos = {};
+  for (const linha of saida.split(/\r?\n/)) {
+    const i = linha.indexOf("=");
+    if (i > 0) campos[linha.slice(0, i)] = linha.slice(i + 1);
+  }
+  return campos;
+}
+
+async function modoPermissoes() {
+  const repos = reposComRemotes();
+  const vistos = new Set();
+  const alvosGh = [];
+  for (const r of repos) {
+    for (const rem of r.remotes) {
+      const url = urlDoRemote(r.dir, rem);
+      if (!/^https:\/\/github\.com\//i.test(url)) continue;
+      const slug = url.replace(/^https:\/\/github\.com\//i, "").replace(/\.git$/, "");
+      if (vistos.has(slug)) continue;
+      vistos.add(slug);
+      alvosGh.push({ id: r.id, rem, url, slug });
+    }
+  }
+
+  let identidade = null;
+  console.log("\nPerguntando ao GitHub o que a credencial guardada pode fazer:\n");
+  for (const a of alvosGh) {
+    let cred;
+    try { cred = credencialDe(a.url); }
+    catch { console.log(`   ${a.slug.padEnd(38)} sem credencial guardada`); continue; }
+    if (!cred.password) { console.log(`   ${a.slug.padEnd(38)} sem credencial guardada`); continue; }
+
+    if (!identidade) {
+      try {
+        const r = await fetch("https://api.github.com/user", {
+          headers: { Authorization: `Bearer ${cred.password}`, Accept: "application/vnd.github+json" },
+        });
+        const j = await r.json();
+        identidade = j.login || "(desconhecida)";
+        console.log(`   Token autentica como: ${identidade}\n`);
+      } catch { /* segue sem identidade */ }
+    }
+
+    try {
+      const r = await fetch(`https://api.github.com/repos/${a.slug}`, {
+        headers: { Authorization: `Bearer ${cred.password}`, Accept: "application/vnd.github+json" },
+      });
+      if (r.status === 404) {
+        console.log(`   ${a.slug.padEnd(38)} INVISIVEL para este token — repo nao selecionado nele`);
+        continue;
+      }
+      if (!r.ok) { console.log(`   ${a.slug.padEnd(38)} HTTP ${r.status}`); continue; }
+
+      // O bloco `permissions` do repo reflete o acesso do USUARIO, nao o do
+      // token — num repo proprio ele diz push:true mesmo com o token so-leitura,
+      // e da verde falso. O teste honesto e pedir uma escrita invalida de
+      // proposito: 403 = o token nao pode escrever; 422 = pode, e so o payload
+      // que nao presta. Nada e criado nos dois casos.
+      const sonda = await fetch(`https://api.github.com/repos/${a.slug}/git/refs`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${cred.password}`,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ref: "refs/heads/", sha: "0".repeat(40) }),
+      });
+      const veredito = sonda.status === 403
+        ? "SO LEITURA — falta Contents: Read and write no token"
+        : sonda.status === 422 || sonda.status === 404
+          ? "PODE ESCREVER"
+          : `resposta inesperada da sonda: HTTP ${sonda.status}`;
+      console.log(`   ${a.slug.padEnd(38)} ${veredito}`);
+    } catch (e) {
+      console.log(`   ${a.slug.padEnd(38)} falha ao consultar: ${(e.message || "").slice(0, 60)}`);
+    }
+  }
+  console.log(
+    "\nComo ler isto:\n" +
+    "  INVISIVEL  -> o repo nao esta na lista do token. Editar o token e marcar ele\n" +
+    "                em Repository access (o padrao do formulario, \"Public Repositories\",\n" +
+    "                nao da escrita em nada).\n" +
+    "  so leitura -> o repo esta no token, mas Contents ficou em Read-only.\n" +
+    "                Editar o token e por Contents em Read and write.\n" +
+    "  sem credencial guardada -> rodar com --token para gravar."
+  );
+}
+
 async function modoToken() {
   const repos = reposComRemotes();
   const alvosDoDono = [];
@@ -283,4 +385,5 @@ function diagnostico() {
 }
 
 if (MODO_TOKEN) await modoToken();
+else if (MODO_PERMISSOES) await modoPermissoes();
 else diagnostico();
