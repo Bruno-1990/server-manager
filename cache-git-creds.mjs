@@ -105,7 +105,21 @@ function lerToken() {
   const arg = process.argv.slice(2).find((a) => a.startsWith("--arquivo="));
   if (arg) {
     const caminho = arg.slice("--arquivo=".length).replace(/^"|"$/g, "");
-    const bruto = readFileSync(caminho, "utf8").split(/\r?\n/)[0].trim();
+    let bruto;
+    try {
+      bruto = readFileSync(caminho, "utf8").split(/\r?\n/)[0].trim();
+    } catch {
+      // Em bash a barra invertida escapa o proximo caractere, entao um caminho
+      // Windows sem aspas chega aqui derretido: C:\Users\bruno\token.txt vira
+      // C:Usersbrunotoken.txt e depois e resolvido contra o cwd.
+      console.log(`\nNao consegui abrir: ${caminho}`);
+      if (/^[A-Za-z]:[^\\/]/.test(caminho) || !/[\\/]/.test(caminho)) {
+        console.log("O caminho chegou sem as barras — o shell comeu as barras invertidas.");
+      }
+      console.log("Use barras normais, que nenhum shell mexe:");
+      console.log("   --arquivo=C:/Users/bruno/token.txt");
+      return Promise.resolve("");
+    }
     try { unlinkSync(caminho); console.log(`Arquivo ${caminho} lido e apagado.`); }
     catch { console.log(`ATENÇÃO: não consegui apagar ${caminho} — apague à mão, tem o token dentro.`); }
     return Promise.resolve(bruto);
@@ -183,6 +197,18 @@ async function modoToken() {
 }
 
 // ─── Modo diagnóstico ────────────────────────────────────────────────────────
+// Por padrão o diagnóstico NÃO deixa o Git Credential Manager abrir janela. Sem
+// isso ele trava exatamente como o painel travava: um remote sem credencial faz
+// o GCM abrir um diálogo, e o script fica pendurado esperando alguém responder
+// — o que num pipe, num agendador ou num terminal esquecido nunca acontece.
+// Quem quiser o comportamento antigo (logar pela janela, um remote por vez) usa
+// `--login`.
+const MODO_LOGIN = args.includes("--login");
+const AMBIENTE = MODO_LOGIN
+  ? process.env
+  : { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never", GIT_ASKPASS: "echo" };
+const FLAG_NAO_INTERATIVO = MODO_LOGIN ? "" : "-c credential.interactive=false";
+
 // Separa os quatro motivos de falha. Só o primeiro se resolve com token; tratar
 // todos como "sem credencial" mandava para o lado errado.
 const CATEGORIAS = [
@@ -193,6 +219,14 @@ const CATEGORIAS = [
   { re: /non-fast-forward|behind its remote|\[rejected\]/i,
     tag: "atrás do remoto", dica: "há commit no remoto que não está aqui — trazer antes de enviar" },
 ];
+// A linha que interessa do despejo do git: a primeira que nao seja ruido.
+function primeiraLinhaUtil(saida) {
+  const util = String(saida || "").split(/\r?\n/)
+    .map((s) => s.replace(/^(remote:|fatal:|error:)/, "").trim())
+    .find((s) => s && !/^Command failed/.test(s) && !/^hint:/.test(s));
+  return (util || "sem detalhe").slice(0, 150);
+}
+
 function classificar(saida) {
   for (const c of CATEGORIAS) if (c.re.test(saida)) return c;
   return { tag: "outro", dica: "ver a saída do git acima" };
@@ -208,7 +242,11 @@ function diagnostico() {
     process.stdout.write(`\n== ${r.id}  (${r.dir}) ==\n`);
     for (const rem of r.remotes) {
       try {
-        execSync(`git -C "${r.dir}" fetch --prune --quiet ${rem}`, { stdio: "inherit" });
+        // stderr capturado, nao herdado: com "inherit" a saida do git vai direto
+        // pro terminal e o Error fica so com "Command failed", sem nada para
+        // classificar — todo erro caia em "outro".
+        execSync(`git -C "${r.dir}" fetch --prune --quiet ${rem}`,
+          { stdio: ["ignore", "ignore", "pipe"], env: AMBIENTE });
         console.log(`   ${rem}: busca OK`);
       } catch (e) {
         const cat = classificar(`${e.message}\n${e.stderr || ""}`);
@@ -219,7 +257,8 @@ function diagnostico() {
       const refspec = refspecDe(r.dir, rem);
       if (!refspec) { console.log(`   ${rem}: sem branch para testar envio (detached HEAD)`); continue; }
       try {
-        execSync(`git -C "${r.dir}" push --dry-run --quiet ${rem} ${refspec}`, { stdio: "inherit" });
+        execSync(`git -C "${r.dir}" ${FLAG_NAO_INTERATIVO} push --dry-run --quiet ${rem} ${refspec}`,
+          { stdio: ["ignore", "ignore", "pipe"], env: AMBIENTE });
         console.log(`   ${rem}: envio OK — credencial de escrita válida`);
         ok++;
       } catch (e) {
