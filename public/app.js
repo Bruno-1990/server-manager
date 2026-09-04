@@ -88,6 +88,8 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-finalizar-manager").innerHTML = icon("power");
   document.getElementById("ico-metricas").innerHTML = icon("cpu");
   document.getElementById("ico-portas").innerHTML = icon("network");
+  document.getElementById("ico-tarefas").innerHTML = icon("activity");
+  document.getElementById("toggle-tarefas").innerHTML = icon("layers");
   document.getElementById("toggle-metricas").innerHTML = icon("layers");
   document.getElementById("toggle-mapa-portas").innerHTML = icon("layers");
   montarAcentos();
@@ -146,9 +148,120 @@ function aplicarSnapshot(snap) {
   renderGit(snap.git);
   renderConflitos(snap.conflitos);
   renderApps(snap.status);
+  renderTarefas(snap.tarefas);
   renderPortas(snap.status);
   renderMetricas(snap.metricas);
   detectarTransicoes(snap.status);
+}
+
+// ─── Tarefas agendadas ───
+// Rotinas que rodam sozinhas em dia/hora do mês (ver tarefas.mjs). Diferente de
+// serviço: não tem porta, não fica de pé — o que importa é quando rodou, se
+// terminou bem e quando roda de novo.
+
+function fmtQuando(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return d.toLocaleString("pt-BR", {
+    day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function fmtDuracao(ms) {
+  if (!ms) return "";
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}min ${s % 60}s`;
+}
+
+function renderTarefas(lista) {
+  const secao = document.getElementById("secao-tarefas");
+  if (!lista || !lista.length) { secao.classList.add("hidden"); return; }
+  secao.classList.remove("hidden");
+  document.getElementById("conta-tarefas").textContent = `(${lista.length})`;
+
+  document.getElementById("lista-tarefas").innerHTML = lista.map((t) => {
+    // Três estados, e a cor segue o que exige ação: rodando é neutro,
+    // terminado bem é verde, terminado mal é vermelho. Nunca rodou é cinza —
+    // não é erro, é uma tarefa nova esperando o dia dela.
+    let estado, cor;
+    if (t.rodando) { estado = `rodando desde ${fmtQuando(t.rodandoDesde)}`; cor = "info"; }
+    else if (t.ultimoCodigo === 0) { estado = `última: ${fmtQuando(t.ultimaExecucao)} · ok ${fmtDuracao(t.ultimaDuracaoMs)}`; cor = "online"; }
+    else if (t.ultimoCodigo !== null) { estado = `última: ${fmtQuando(t.ultimaExecucao)} · FALHOU (code ${t.ultimoCodigo})`; cor = "erro"; }
+    else { estado = "nunca executada"; cor = "neutro"; }
+
+    const acoes = t.rodando
+      ? `<button class="btn btn-sm btn-icon btn-danger" onclick="pararTarefa('${t.id}')" title="Interromper">${icon("stop")}</button>`
+      : `<button class="btn btn-sm btn-success" onclick="executarTarefa('${t.id}')" title="Executar agora">${icon("play")} Rodar</button>`;
+
+    return `
+      <div class="tarefa-item">
+        <div class="tarefa-info">
+          <span class="dot dot-${cor}"></span>
+          <div class="tarefa-texto">
+            <div class="tarefa-nome">
+              ${t.nome}
+              ${t.habilitada ? "" : `<span class="tarefa-tag">desabilitada</span>`}
+            </div>
+            <div class="tarefa-desc">${t.descricao || ""}</div>
+            <div class="tarefa-meta">
+              todo dia ${t.dia} às ${String(t.hora).padStart(2, "0")}:00
+              · ${estado}
+              · próxima ${fmtQuando(t.proximaExecucao)}
+              ${t.situacao?.motivo ? ` · <em>${t.situacao.motivo}</em>` : ""}
+            </div>
+          </div>
+        </div>
+        <div class="tarefa-acoes">
+          ${acoes}
+          <button class="btn btn-sm btn-icon btn-ghost" onclick="verLogsTarefa('${t.id}')" title="Log da última execução">${icon("logs")}</button>
+          <button class="btn btn-sm btn-icon ${t.habilitada ? "btn-warning" : "btn-ghost"}" onclick="alternarTarefa('${t.id}',${!t.habilitada})" title="${t.habilitada ? "Desabilitar" : "Habilitar"}">${icon("power")}</button>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+async function executarTarefa(id) {
+  mostrarNotificacao(`Iniciando "${id}"...`, "info");
+  const res = await post("/api/tarefas/executar", { id });
+  mostrarNotificacao(
+    res && res.ok ? `Tarefa "${id}" iniciada${res.pid ? ` (PID ${res.pid})` : ""}` : `Erro: ${res?.erro || "falha"}`,
+    res && res.ok ? "success" : "danger"
+  );
+}
+
+async function pararTarefa(id) {
+  const res = await post("/api/tarefas/parar", { id });
+  mostrarNotificacao(res && res.ok ? `Tarefa "${id}" interrompida` : `Erro: ${res?.erro || "falha"}`, res && res.ok ? "warning" : "danger");
+}
+
+async function alternarTarefa(id, habilitada) {
+  const res = await post("/api/tarefas/alternar", { id, habilitada });
+  mostrarNotificacao(
+    res && res.ok ? `Tarefa "${id}" ${habilitada ? "habilitada" : "desabilitada"}` : `Erro: ${res?.erro || "falha"}`,
+    res && res.ok ? "success" : "danger"
+  );
+}
+
+/**
+ * Log da tarefa: o da execução em curso, ou o da última que terminou.
+ *
+ * Vem por requisição única, e não pelo SSE de logs dos serviços: uma tarefa
+ * mensal termina em minutos e o que se quer ver quase sempre é o log de uma
+ * execução que já acabou — o stream serviria a um processo vivo.
+ */
+async function verLogsTarefa(id) {
+  document.getElementById("modal-titulo").textContent = `Tarefa — ${id}`;
+  document.getElementById("modal-logs").classList.remove("hidden");
+  const corpo = document.getElementById("modal-body");
+  corpo.textContent = "Carregando…";
+  try {
+    const linhas = await (await fetch(`/api/tarefas/logs?id=${encodeURIComponent(id)}`)).json();
+    corpo.textContent = linhas.length
+      ? linhas.map((l) => `[${new Date(l.ts).toLocaleTimeString("pt-BR")}] ${l.texto}`).join("\n")
+      : "Sem log — esta tarefa ainda não foi executada.";
+  } catch (e) {
+    corpo.textContent = `Não foi possível ler o log: ${e.message}`;
+  }
 }
 
 // ─── Detectar serviços que caíram/subiram ───

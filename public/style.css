@@ -382,10 +382,51 @@ main { max-width: 1480px; margin: 0 auto; padding: 1.7rem 1.6rem 3rem; }
 .servico-meta { font-size: 0.66rem; color: var(--text-dim); font-family: "JetBrains Mono", monospace; }
 .servico-acoes { display: flex; align-items: center; gap: 0.32rem; flex-shrink: 0; }
 
+/* Tarefas agendadas
+   Item mais alto que o de serviço porque carrega três linhas: o que é, o que
+   faz e quando roda. A descrição existe para quem abre o painel sem saber o
+   que aquela rotina mexe — e para uma rotina que dispara sozinha, isso vale
+   mais do que economizar altura. */
+.lista-tarefas {
+  display: flex; flex-direction: column; gap: 0.4rem;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 0.5rem;
+}
+.tarefa-item {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 0.8rem;
+  padding: 0.7rem 0.65rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+.tarefa-item:hover { background: var(--hover); }
+.tarefa-info { display: flex; align-items: flex-start; gap: 0.6rem; min-width: 0; }
+.tarefa-info .dot { margin-top: 0.32rem; }
+.tarefa-texto { min-width: 0; }
+.tarefa-nome { font-weight: 600; font-size: 0.9rem; display: flex; align-items: center; gap: 0.4rem; }
+.tarefa-tag {
+  font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-dim); background: var(--chip); border: 1px solid var(--border);
+  padding: 1px 7px; border-radius: 999px; font-weight: 600;
+}
+.tarefa-desc { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
+.tarefa-meta {
+  font-size: 0.7rem; color: var(--text-dim); margin-top: 4px;
+  font-family: "JetBrains Mono", monospace; line-height: 1.5;
+}
+.tarefa-meta em { font-style: normal; color: var(--text-muted); }
+.tarefa-acoes { display: flex; align-items: center; gap: 0.32rem; flex-shrink: 0; }
+
 /* Dots */
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .dot-online { background: var(--success); box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 70%, transparent); animation: pulse 2s infinite; }
 .dot-offline { background: var(--text-dim); }
+/* Tarefa em execução pulsa como serviço online. Falha é vermelha, e é o único
+   dot vermelho do painel de propósito: serviço offline é rotina, tarefa que
+   saiu com erro é a coisa que alguém precisa olhar. Nunca executada fica
+   inerte — não é falha, é uma rotina nova esperando o dia dela. */
+.dot-info { background: var(--accent); animation: pulse 2s infinite; }
+.dot-erro { background: var(--danger); }
+.dot-neutro { background: var(--text-dim); }
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 60%, transparent); }
   70% { box-shadow: 0 0 0 7px transparent; }

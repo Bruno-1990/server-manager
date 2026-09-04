@@ -29,7 +29,9 @@
           "cwd": "../DCTF WEB/DCTF_MPC/frontend"
         }
       },
-      "dependencias": ["mysql"]
+      "dependencias": [
+        "mysql"
+      ]
     },
     "regularizacao-cpf": {
       "nome": "Regularização CPF",
@@ -44,7 +46,9 @@
           "cwd": "../Regularizacao_CPF"
         }
       },
-      "dependencias": ["mysql"]
+      "dependencias": [
+        "mysql"
+      ]
     },
     "irpf2026": {
       "nome": "IRPF 2026",
@@ -67,7 +71,9 @@
           "cwd": "../IRPF2026/frontend"
         }
       },
-      "dependencias": ["mysql"]
+      "dependencias": [
+        "mysql"
+      ]
     },
     "webapp": {
       "nome": "Webapp Fiscal Tools",
@@ -119,7 +125,9 @@
           "healthCheck": "http://localhost:8021",
           "comando": ".venv-win\\Scripts\\python.exe -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8021",
           "cwd": "../SPED",
-          "env": { "PYTHONPATH": "." }
+          "env": {
+            "PYTHONPATH": "."
+          }
         },
         "frontend": {
           "porta": 5175,
@@ -139,7 +147,9 @@
           "cwd": "../SPED"
         }
       },
-      "dependencias": ["sped-postgresql"]
+      "dependencias": [
+        "sped-postgresql"
+      ]
     },
     "centria": {
       "nome": "Centria AAP",
@@ -188,7 +198,10 @@
           "cwd": "../centria"
         }
       },
-      "dependencias": ["centria-postgresql", "centria-localstack"],
+      "dependencias": [
+        "centria-postgresql",
+        "centria-localstack"
+      ],
       "arquivosProtegidos": [
         "apps/backend-api/src/main/java/com/aap/accounting/application/service/TenantService.java",
         "apps/web/src/app/pages/OnboardingPage.tsx",
@@ -245,7 +258,9 @@
           "healthCheck": "http://localhost:4000/api/health",
           "comando": "pnpm --filter @saas/api dev",
           "cwd": "../ONECLICK V2",
-          "env": { "PORT": "4000" }
+          "env": {
+            "PORT": "4000"
+          }
         },
         "web": {
           "porta": 3000,
@@ -274,7 +289,10 @@
           "cwd": "../ONECLICK V2"
         }
       },
-      "dependencias": ["oneclick-v2-postgresql", "oneclick-v2-redis"]
+      "dependencias": [
+        "oneclick-v2-postgresql",
+        "oneclick-v2-redis"
+      ]
     }
   },
   "infraCompartilhada": {
@@ -284,7 +302,24 @@
       "tipo": "infra",
       "tecnologia": "MySQL",
       "healthCheck": "tcp://localhost:3306",
-      "usadoPor": ["dctf-web", "regularizacao-cpf", "irpf2026"]
+      "usadoPor": [
+        "dctf-web",
+        "regularizacao-cpf",
+        "irpf2026"
+      ]
+    }
+  },
+  "tarefas": {
+    "darf-lote-acessorias": {
+      "nome": "DARF previdenciário → Acessórias",
+      "descricao": "Emite a guia da DCTFWeb de cada empresa do lote mensal, grava os PDFs em \\\\192.168.0.1\\Envio_Acessorias e envia o relatório ao DP. A lista de empresas fica em Trabalhista > DARF.",
+      "appId": "dctf-web",
+      "comando": "npm run darf:lote",
+      "cwd": "../DCTF WEB/DCTF_MPC",
+      "dia": 25,
+      "hora": 6,
+      "habilitada": true,
+      "timeoutMin": 45
     }
   },
   "reposVigiados": [

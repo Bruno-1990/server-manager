@@ -16,3 +16,7 @@ Desktop.ini
 
 # Helpers gerados em runtime pelos botoes Reiniciar/Finalizar do Manager
 _sm-*.cmd
+
+# Estado das tarefas agendadas (ultima execucao, codigo de saida, log).
+# Runtime puro: cada maquina tem o seu.
+tarefas-estado.json

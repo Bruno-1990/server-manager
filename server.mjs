@@ -21,6 +21,7 @@ import net from "node:net";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { exec, spawn } from "node:child_process";
+import * as tarefas from "./tarefas.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MANAGER_PORTS = [9000, 9001];
@@ -1093,7 +1094,18 @@ async function montarSnapshot() {
     checarDocker(),
     obterMetricas(),
   ]);
-  return { status, docker, conflitos: detectarConflitos(), metricas, git: obterGitStatus(), ts: Date.now() };
+  return {
+    status,
+    docker,
+    conflitos: detectarConflitos(),
+    metricas,
+    git: obterGitStatus(),
+    // As tarefas entram no snapshot, e não numa rota própria consultada de
+    // tempos em tempos: quem está com o painel aberto vê a rotina disparar,
+    // rodar e terminar sem apertar nada.
+    tarefas: tarefas.listar(carregarRegistro()),
+    ts: Date.now(),
+  };
 }
 
 const clientesStatus = new Set();
@@ -1471,6 +1483,46 @@ async function handler(req, res) {
       return res.end(JSON.stringify(result));
     }
 
+    // ─── Tarefas agendadas (ver tarefas.mjs) ───
+    if (url.pathname === "/api/tarefas" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(tarefas.listar(carregarRegistro())));
+    }
+
+    if (url.pathname === "/api/tarefas/logs" && req.method === "GET") {
+      const id = url.searchParams.get("id") || "";
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(tarefas.logsDe(id)));
+    }
+
+    if (url.pathname === "/api/tarefas/executar" && req.method === "POST") {
+      const dados = parseJsonSeguro(await lerBody(req));
+      const tarefa = carregarRegistro().tarefas?.[dados?.id];
+      if (!tarefa) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ ok: false, erro: "Tarefa não encontrada" }));
+      }
+      // 'manual' fica gravado na execução: no mês seguinte, saber se a rodada
+      // saiu sozinha ou porque alguém clicou é metade do diagnóstico.
+      const result = tarefas.executar(tarefa, dados.id, "manual");
+      res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(result));
+    }
+
+    if (url.pathname === "/api/tarefas/parar" && req.method === "POST") {
+      const dados = parseJsonSeguro(await lerBody(req));
+      const result = tarefas.parar(dados?.id);
+      res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(result));
+    }
+
+    if (url.pathname === "/api/tarefas/alternar" && req.method === "POST") {
+      const dados = parseJsonSeguro(await lerBody(req));
+      const result = tarefas.alternar(dados?.id, dados?.habilitada !== false);
+      res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify(result));
+    }
+
     if (url.pathname === "/api/scan-portas" && req.method === "GET") {
       const registro = carregarRegistro();
       const todasPortas = new Set();
@@ -1546,4 +1598,10 @@ function lerBody(req) {
   console.log(`╚══════════════════════════════════════════════════╝`);
   console.log(`Dashboard (rede):  http://192.168.0.47:${MANAGER_PORT}`);
   console.log(`API:               http://192.168.0.47:${MANAGER_PORT}/api/status\n`);
+
+  // O agendador de tarefas roda SEMPRE, independente de haver alguém com o
+  // painel aberto — ao contrário do loop de snapshot, que só trabalha quando
+  // há cliente SSE conectado. Uma rotina mensal que só dispara com o navegador
+  // aberto não é uma rotina automática.
+  tarefas.iniciarLoop(carregarRegistro);
 })();

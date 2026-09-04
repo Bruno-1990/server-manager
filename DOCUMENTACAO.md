@@ -121,6 +121,67 @@ Estrutura:
 
 ---
 
+## 3b. `tarefas` — rotinas agendadas (`tarefas.mjs`)
+
+Serviço fica de pé; **tarefa roda e termina**. São coisas diferentes e por isso
+vivem em chaves diferentes do registro. Tarefa não tem porta — e enfiá-la em
+`servicos` quebraria de imediato, porque `iniciarServico` mata quem estiver na
+`svc.porta` antes de subir, e `undefined` não é porta.
+
+```json
+"tarefas": {
+  "darf-lote-acessorias": {
+    "nome": "DARF previdenciário → Acessórias",
+    "descricao": "Texto exibido no painel — o que a rotina mexe.",
+    "appId": "dctf-web",
+    "comando": "npm run darf:lote",
+    "cwd": "../DCTF WEB/DCTF_MPC",
+    "dia": 25,
+    "hora": 6,
+    "habilitada": true,
+    "timeoutMin": 45
+  }
+}
+```
+
+| Campo | Obrigatório | Descrição |
+|---|---|---|
+| `nome` / `descricao` | não | Exibidos no painel. Sem `nome`, usa o id. |
+| `comando` / `cwd` | sim | Iguais aos de serviço: linha inteira no shell, `cwd` relativo a `server-manager/`. |
+| `dia` / `hora` | sim | Dia do mês e hora. **Não há cron**: cinco campos seriam mais poderosos e menos legíveis para quem abre o painel, e o Manager não tem dependências para interpretá-los. |
+| `habilitada` | não | Default `true`. O botão do painel grava aqui. |
+| `timeoutMin` | não | Default 30. Mata a árvore do processo ao estourar. |
+| `env` | não | Variáveis extras para o processo. |
+| `appId` | não | Só rotulagem — associa a tarefa a um app do registro. |
+
+**Quando dispara.** Não é "às 06:00 do dia 25", é *na primeira verificação a
+partir do dia 25 às 06:00 que encontre o mês ainda não feito*. Máquina desligada
+naquela hora ⇒ roda quando voltar, no dia 26, 27. Com horário exato, um
+desligamento de dez minutos custaria a competência inteira.
+
+**O que fecha o mês é o sucesso, não a tentativa.** Saída ≠ 0 (pasta de rede
+fora do ar, banco caído) não marca o mês como feito: é retentada, com uma hora
+de folga entre tentativas.
+
+**Estado em disco** (`tarefas-estado.json`, ao lado do `server.mjs`): última
+execução, código de saída, duração, origem (`agendador` \| `manual`) e o log
+inteiro. Em memória não serviria — o Manager reinicia sozinho pelo runner, e um
+restart no dia 25 rodaria a tarefa de novo. **Não versionar** este arquivo.
+
+**O agendador roda sempre**, mesmo sem ninguém com o painel aberto — ao
+contrário do loop de snapshot, que só trabalha com cliente SSE conectado. Uma
+rotina mensal que só dispara com o navegador aberto não é automática.
+
+### Adicionar uma tarefa
+1. O comando precisa **terminar sozinho** e devolver código de saída honesto:
+   `0` = fez o trabalho, `≠ 0` = não fez. Se ele sair 0 sempre, a retentativa
+   nunca acontece.
+2. Declarar em `tarefas` no `port-registry.json`.
+3. Reiniciar o Manager (o registro é lido a cada verificação, mas o loop só
+   conta as tarefas na subida).
+
+---
+
 ## 4. Endpoints da API (`server.mjs`)
 
 | Rota | Método | Função |
@@ -140,6 +201,11 @@ Estrutura:
 | `/api/logs/stream?appId=&svcId=` | GET (SSE) | **Logs ao vivo.** Node → diff do buffer; Docker → `docker compose ... logs -f`. Encerra o processo ao desconectar. |
 | `/api/metricas` | GET | CPU%/RAM por container via `docker stats --no-stream`. Cache ~2s. |
 | `/api/rebuild` | POST | `{appId, svcId}` (Docker) → `docker compose ... up -d --build` com **saída em streaming** (a UI lê o body via `fetch`/ReadableStream). |
+| `/api/tarefas` | GET | Tarefas agendadas com última execução, próxima prevista e motivo de não estar rodando (ver §3b). Também vão no `snapshot` do SSE. |
+| `/api/tarefas/logs?id=` | GET | Log da execução em curso, ou o da última que terminou (vem do disco). |
+| `/api/tarefas/executar` | POST | `{id}` → dispara agora, fora do horário. Fica gravado como origem `manual`. |
+| `/api/tarefas/parar` | POST | `{id}` → mata a árvore do processo da tarefa. |
+| `/api/tarefas/alternar` | POST | `{id, habilitada}` → liga/desliga, **gravando no `port-registry.json`**. |
 
 ---
 
