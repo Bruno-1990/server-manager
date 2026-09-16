@@ -318,8 +318,10 @@
       "cwd": "../DCTF WEB/DCTF_MPC",
       "dia": 25,
       "hora": 6,
-      "habilitada": true,
-      "timeoutMin": 45
+      "habilitada": false,
+      "timeoutMin": 45,
+      "desabilitadaEm": "2026-09-16",
+      "desabilitadaPorque": "O agendamento passou para o painel do proprio DCTF (Administracao > Agendamentos e envios de e-mail), onde dia, hora e destinatarios sao editaveis sem reiniciar o servico. NAO reabilite sem desligar o job 'darf-lote' la: os dois juntos produzem duas execucoes e dois e-mails ao DP no mesmo dia."
     }
   },
   "reposVigiados": [
