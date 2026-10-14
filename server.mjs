@@ -564,7 +564,7 @@ async function atualizarGitCache() {
   const registro = carregarRegistro();
   // Apps do registro + repos vigiados que não são apps (server-manager, etc).
   const alvos = [
-    ...Object.entries(registro.apps).map(([id, a]) => ({ id, nome: a.nome, diretorio: a.diretorio, remotoDownload: a.remotoDownload, remotoEnvio: a.remotoEnvio })),
+    ...Object.entries(registro.apps).map(([id, a]) => ({ id, nome: a.nome, diretorio: a.diretorio, remotoDownload: a.remotoDownload, remotoEnvio: a.remotoEnvio, envioNaPrincipal: a.envioNaPrincipal })),
     ...(registro.reposVigiados || []),
   ];
   const resultado = {};
@@ -643,6 +643,20 @@ async function atualizarGitCache() {
       sujo = (await execP(`git -C "${dir}" status --porcelain`, { maxBuffer: 8 * 1024 * 1024 }))
         .split(/\r?\n/).filter((s) => s.trim()).length;
     } catch {}
+    // A comparação segue o destino real do botão Enviar (alvoPush): a principal
+    // do remote, ou o branch de mesmo nome quando o app pede. Se a ref ainda não
+    // existe lá (branch nova), vale a cascata acima.
+    try {
+      const alvoEnvio = await alvoPush(dir, alvo.remotoEnvio, alvo.envioNaPrincipal !== false);
+      if (!alvoEnvio.erro && alvoEnvio.remote && alvoEnvio.branchRemoto) {
+        const ref = `${alvoEnvio.remote}/${alvoEnvio.branchRemoto}`;
+        const c = (await execP(`git -C "${dir}" rev-list --left-right --count HEAD...${ref}`)).trim();
+        const [a, b] = c.split(/\s+/).map((n) => parseInt(n, 10) || 0);
+        compareRef = ref; ahead = a; behind = b; rastreado = true;
+      } else if (!alvoEnvio.erro) {
+        rastreado = false;
+      }
+    } catch { /* ref ainda não existe no remote: vale a cascata */ }
     // O aviso só vale se o remote usado na comparação foi de fato buscado agora.
     const remoteUsado = compareRef.split("/")[0];
     let verificado = !!compareRef && fetchOk[remoteUsado] === true;
@@ -659,18 +673,6 @@ async function atualizarGitCache() {
       } else {
         behind = 0;
         verificado = false;
-      }
-    }
-    // Com `remotoEnvio`, o "a enviar" é medido contra o branch de mesmo nome nele.
-    if (alvo.remotoEnvio) {
-      const rem = await remoteDaUrl(dir, alvo.remotoEnvio);
-      rastreado = false;
-      if (rem && branch) {
-        try {
-          await execP(`git -C "${dir}" rev-parse --verify --quiet ${rem}/${branch}`);
-          ahead = parseInt((await execP(`git -C "${dir}" rev-list --count ${rem}/${branch}..HEAD`)).trim(), 10) || 0;
-          rastreado = true;
-        } catch { /* branch ainda não existe lá: vale o ahead da cascata */ }
       }
     }
     resultado[alvo.id] = { nome: alvo.nome, branch, ahead, behind, hasUpstream, compareRef, rastreado, verificado, sujo, refDownload };
@@ -727,7 +729,7 @@ function alvoDoRegistro(appId) {
   const registro = carregarRegistro();
   if (registro.apps?.[appId]) {
     const a = registro.apps[appId];
-    return { id: appId, nome: a.nome, diretorio: a.diretorio, remotoDownload: a.remotoDownload, remotoEnvio: a.remotoEnvio };
+    return { id: appId, nome: a.nome, diretorio: a.diretorio, remotoDownload: a.remotoDownload, remotoEnvio: a.remotoEnvio, envioNaPrincipal: a.envioNaPrincipal };
   }
   return (registro.reposVigiados || []).find((r) => r.id === appId) || null;
 }
@@ -749,32 +751,53 @@ async function arquivosDoRepo(dir) {
   return itens;
 }
 
-// Para onde o push vai. Se o branch ja tem upstream, e ele. Se nao tem, e o
-// branch de mesmo nome no remoto principal — criado no push com `-u`.
-// Com `remotoEnvio` no registro (URL), o push vai SEMPRE para o remote que aponta
-// para ela, branch de mesmo nome — o upstream é ignorado. No centria isso impede
-// que um branch rastreando `origin` (produção) receba push pelo painel.
-async function alvoPush(dir, remotoEnvio) {
+// Para onde o push vai. Primeiro o remote: o de `remotoEnvio` (URL no registro),
+// senão o do upstream do branch, senão o principal (origin primeiro).
+// Depois o branch remoto: por padrão a PRINCIPAL desse remote (HEAD/main/master),
+// só por fast-forward — se a principal tiver commit que não está aqui, o push é
+// recusado e o painel avisa; nunca merge nem force. `envioNaPrincipal: false` no
+// registro volta ao branch de mesmo nome (o centria, que diverge do base/main).
+async function principalDoRemote(dir, remote) {
+  try {
+    const r = (await execP(`git -C "${dir}" rev-parse --abbrev-ref ${remote}/HEAD`)).trim();
+    const barra = r.indexOf("/");
+    if (barra > 0 && r.slice(barra + 1) !== "HEAD") return r.slice(barra + 1);
+  } catch {}
+  for (const cand of ["main", "master"]) {
+    try { await execP(`git -C "${dir}" rev-parse --verify --quiet ${remote}/${cand}`); return cand; } catch {}
+  }
+  return "";
+}
+
+async function alvoPush(dir, remotoEnvio, naPrincipal = true) {
   const branch = (await execP(`git -C "${dir}" rev-parse --abbrev-ref HEAD`)).trim();
   if (!branch || branch === "HEAD") return { erro: "repo em detached HEAD — sem branch para enviar" };
+  let remote = "", upBranch = "";
   if (remotoEnvio) {
-    const remote = await remoteDaUrl(dir, remotoEnvio);
+    remote = await remoteDaUrl(dir, remotoEnvio);
     if (!remote) return { branch, erro: `nenhum remote do repo aponta para ${remotoEnvio} (adicione com git remote add)` };
-    let novo = false;
-    try { await execP(`git -C "${dir}" rev-parse --verify --quiet ${remote}/${branch}`); } catch { novo = true; }
-    return { branch, remote, branchRemoto: branch, novo };
-  }
-  try {
-    const up = (await execP(`git -C "${dir}" rev-parse --abbrev-ref @{upstream}`)).trim();
-    const barra = up.indexOf("/");
-    if (barra > 0) {
-      return { branch, remote: up.slice(0, barra), branchRemoto: up.slice(barra + 1), novo: false };
+  } else {
+    try {
+      const up = (await execP(`git -C "${dir}" rev-parse --abbrev-ref @{upstream}`)).trim();
+      const barra = up.indexOf("/");
+      if (barra > 0) { remote = up.slice(0, barra); upBranch = up.slice(barra + 1); }
+    } catch { /* sem upstream: cai no remoto principal abaixo */ }
+    if (!remote) {
+      const remotes = (await execP(`git -C "${dir}" remote`)).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      if (!remotes.length) return { erro: "repo sem remoto configurado" };
+      remotes.sort((a, b) => (a === "origin" ? -1 : b === "origin" ? 1 : 0));
+      remote = remotes[0];
     }
-  } catch { /* sem upstream: cai no remoto principal abaixo */ }
-  const remotes = (await execP(`git -C "${dir}" remote`)).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  if (!remotes.length) return { erro: "repo sem remoto configurado" };
-  remotes.sort((a, b) => (a === "origin" ? -1 : b === "origin" ? 1 : 0));
-  return { branch, remote: remotes[0], branchRemoto: branch, novo: true };
+  }
+  if (naPrincipal) {
+    const principal = await principalDoRemote(dir, remote);
+    if (!principal) return { branch, remote, erro: `não achei a main/master em ${remote} — rode um fetch` };
+    return { branch, remote, branchRemoto: principal, novo: false, naPrincipal: true };
+  }
+  if (upBranch) return { branch, remote, branchRemoto: upBranch, novo: false };
+  let novo = false;
+  try { await execP(`git -C "${dir}" rev-parse --verify --quiet ${remote}/${branch}`); } catch { novo = true; }
+  return { branch, remote, branchRemoto: branch, novo };
 }
 
 // De onde o painel BAIXA. Sem `remotoDownload` no registro, é o mesmo alvo do
@@ -843,7 +866,7 @@ async function detalheGit(appId) {
       : motivoBloqueio(it.caminho, protegidos);
     if (motivo) bloqueados.push({ ...it, motivo }); else entram.push(it);
   }
-  const push = await alvoPush(dir, alvo.remotoEnvio);
+  const push = await alvoPush(dir, alvo.remotoEnvio, alvo.envioNaPrincipal !== false);
   const git = _gitCache.apps[appId] || {};
 
   // Quantos commits faltam enviar, contados AGORA. O `ahead` do cache tem ate 5

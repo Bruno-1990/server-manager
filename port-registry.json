@@ -7,6 +7,7 @@
     "reposVigiados": "Repos git vigiados no aviso de sync que nao sao apps do registro. Campos: id, nome, diretorio (relativo a server-manager/).",
     "remotoDownload": "URL opcional por app: so o aviso de 'remoto a frente' e o botao Trazer usam o remote que aponta para ela (branch de mesmo nome, senao o default). O envio nao muda.",
     "remotoEnvio": "URL opcional por app: o push vai SEMPRE para o remote que aponta para ela, branch de mesmo nome (upstream ignorado).",
+    "envioNaPrincipal": "Padrao (ausente) = o botao Enviar manda para a main/master do remote, so fast-forward. false = branch de mesmo nome (centria, que diverge do base/main).",
     "arquivosProtegidos": "Caminhos que o commit pelo painel NUNCA inclui (adaptacoes locais). Ver WINDOWS-LOCAL.md secao 2 no caso do centria."
   },
   "apps": {
@@ -158,6 +159,7 @@
       "diretorio": "../centria",
       "remotoDownload": "https://github.com/centralcontabil-tech/centria",
       "remotoEnvio": "https://github.com/Bruno-1990/Centria-base",
+      "envioNaPrincipal": false,
       "servicos": {
         "api": {
           "porta": 8091,
