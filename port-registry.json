@@ -5,6 +5,8 @@
     "docker": "Se 'tecnologia' ou 'comando' contem 'docker', o servico e Docker-aware: inicia com 'up -d' (sem matar porta) e para com 'pararComando'. NUNCA usar taskkill em porta de container.",
     "ignorado": "Esta chave _doc e ignorada pelo server.mjs (so le apps e infraCompartilhada).",
     "reposVigiados": "Repos git vigiados no aviso de sync que nao sao apps do registro. Campos: id, nome, diretorio (relativo a server-manager/).",
+    "remotoDownload": "URL opcional por app: so o aviso de 'remoto a frente' e o botao Trazer usam o remote que aponta para ela (branch de mesmo nome, senao o default). O envio nao muda.",
+    "remotoEnvio": "URL opcional por app: o push vai SEMPRE para o remote que aponta para ela, branch de mesmo nome (upstream ignorado).",
     "arquivosProtegidos": "Caminhos que o commit pelo painel NUNCA inclui (adaptacoes locais). Ver WINDOWS-LOCAL.md secao 2 no caso do centria."
   },
   "apps": {
@@ -154,6 +156,8 @@
     "centria": {
       "nome": "Centria AAP",
       "diretorio": "../centria",
+      "remotoDownload": "https://github.com/centralcontabil-tech/centria",
+      "remotoEnvio": "https://github.com/Bruno-1990/Centria-base",
       "servicos": {
         "api": {
           "porta": 8091,
@@ -246,53 +250,6 @@
         }
       },
       "dependencias": []
-    },
-    "oneclick-v2": {
-      "nome": "OneClick V2 (SaaS ERP/CRM)",
-      "diretorio": "../ONECLICK V2",
-      "servicos": {
-        "api": {
-          "porta": 4000,
-          "tipo": "backend",
-          "tecnologia": "NestJS + tRPC + Prisma",
-          "healthCheck": "http://localhost:4000/api/health",
-          "comando": "pnpm --filter @saas/api dev",
-          "cwd": "../ONECLICK V2",
-          "env": {
-            "PORT": "4000"
-          }
-        },
-        "web": {
-          "porta": 3000,
-          "tipo": "frontend",
-          "tecnologia": "Next.js 15",
-          "healthCheck": "http://localhost:3000",
-          "comando": "pnpm --filter @saas/web dev",
-          "cwd": "../ONECLICK V2"
-        },
-        "postgresql": {
-          "porta": 5432,
-          "tipo": "infra",
-          "tecnologia": "PostgreSQL 16 (Docker)",
-          "healthCheck": "tcp://localhost:5432",
-          "comando": "docker compose up -d postgres",
-          "pararComando": "docker compose stop postgres",
-          "cwd": "../ONECLICK V2"
-        },
-        "redis": {
-          "porta": 6379,
-          "tipo": "infra",
-          "tecnologia": "Redis 7 (Docker)",
-          "healthCheck": "tcp://localhost:6379",
-          "comando": "docker compose up -d redis",
-          "pararComando": "docker compose stop redis",
-          "cwd": "../ONECLICK V2"
-        }
-      },
-      "dependencias": [
-        "oneclick-v2-postgresql",
-        "oneclick-v2-redis"
-      ]
     }
   },
   "infraCompartilhada": {

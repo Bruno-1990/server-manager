@@ -564,7 +564,7 @@ async function atualizarGitCache() {
   const registro = carregarRegistro();
   // Apps do registro + repos vigiados que não são apps (server-manager, etc).
   const alvos = [
-    ...Object.entries(registro.apps).map(([id, a]) => ({ id, nome: a.nome, diretorio: a.diretorio })),
+    ...Object.entries(registro.apps).map(([id, a]) => ({ id, nome: a.nome, diretorio: a.diretorio, remotoDownload: a.remotoDownload, remotoEnvio: a.remotoEnvio })),
     ...(registro.reposVigiados || []),
   ];
   const resultado = {};
@@ -645,8 +645,35 @@ async function atualizarGitCache() {
     } catch {}
     // O aviso só vale se o remote usado na comparação foi de fato buscado agora.
     const remoteUsado = compareRef.split("/")[0];
-    const verificado = !!compareRef && fetchOk[remoteUsado] === true;
-    resultado[alvo.id] = { nome: alvo.nome, branch, ahead, behind, hasUpstream, compareRef, rastreado, verificado, sujo };
+    let verificado = !!compareRef && fetchOk[remoteUsado] === true;
+    // Com `remotoDownload`, o "remoto à frente" passa a ser medido contra ele.
+    let refDownload = "";
+    if (alvo.remotoDownload) {
+      const dl = await alvoDownload(dir, alvo.remotoDownload, branch);
+      if (dl.ref) {
+        refDownload = dl.ref;
+        try {
+          behind = parseInt((await execP(`git -C "${dir}" rev-list --count HEAD..${dl.ref}`)).trim(), 10) || 0;
+        } catch { behind = 0; }
+        verificado = fetchOk[dl.remote] === true;
+      } else {
+        behind = 0;
+        verificado = false;
+      }
+    }
+    // Com `remotoEnvio`, o "a enviar" é medido contra o branch de mesmo nome nele.
+    if (alvo.remotoEnvio) {
+      const rem = await remoteDaUrl(dir, alvo.remotoEnvio);
+      rastreado = false;
+      if (rem && branch) {
+        try {
+          await execP(`git -C "${dir}" rev-parse --verify --quiet ${rem}/${branch}`);
+          ahead = parseInt((await execP(`git -C "${dir}" rev-list --count ${rem}/${branch}..HEAD`)).trim(), 10) || 0;
+          rastreado = true;
+        } catch { /* branch ainda não existe lá: vale o ahead da cascata */ }
+      }
+    }
+    resultado[alvo.id] = { nome: alvo.nome, branch, ahead, behind, hasUpstream, compareRef, rastreado, verificado, sujo, refDownload };
   }));
   _gitCache.apps = resultado;
   _gitCache.ts = Date.now();
@@ -699,7 +726,8 @@ function protegidosDoApp(appId) {
 function alvoDoRegistro(appId) {
   const registro = carregarRegistro();
   if (registro.apps?.[appId]) {
-    return { id: appId, nome: registro.apps[appId].nome, diretorio: registro.apps[appId].diretorio };
+    const a = registro.apps[appId];
+    return { id: appId, nome: a.nome, diretorio: a.diretorio, remotoDownload: a.remotoDownload, remotoEnvio: a.remotoEnvio };
   }
   return (registro.reposVigiados || []).find((r) => r.id === appId) || null;
 }
@@ -723,9 +751,19 @@ async function arquivosDoRepo(dir) {
 
 // Para onde o push vai. Se o branch ja tem upstream, e ele. Se nao tem, e o
 // branch de mesmo nome no remoto principal — criado no push com `-u`.
-async function alvoPush(dir) {
+// Com `remotoEnvio` no registro (URL), o push vai SEMPRE para o remote que aponta
+// para ela, branch de mesmo nome — o upstream é ignorado. No centria isso impede
+// que um branch rastreando `origin` (produção) receba push pelo painel.
+async function alvoPush(dir, remotoEnvio) {
   const branch = (await execP(`git -C "${dir}" rev-parse --abbrev-ref HEAD`)).trim();
   if (!branch || branch === "HEAD") return { erro: "repo em detached HEAD — sem branch para enviar" };
+  if (remotoEnvio) {
+    const remote = await remoteDaUrl(dir, remotoEnvio);
+    if (!remote) return { branch, erro: `nenhum remote do repo aponta para ${remotoEnvio} (adicione com git remote add)` };
+    let novo = false;
+    try { await execP(`git -C "${dir}" rev-parse --verify --quiet ${remote}/${branch}`); } catch { novo = true; }
+    return { branch, remote, branchRemoto: branch, novo };
+  }
   try {
     const up = (await execP(`git -C "${dir}" rev-parse --abbrev-ref @{upstream}`)).trim();
     const barra = up.indexOf("/");
@@ -737,6 +775,38 @@ async function alvoPush(dir) {
   if (!remotes.length) return { erro: "repo sem remoto configurado" };
   remotes.sort((a, b) => (a === "origin" ? -1 : b === "origin" ? 1 : 0));
   return { branch, remote: remotes[0], branchRemoto: branch, novo: true };
+}
+
+// De onde o painel BAIXA. Sem `remotoDownload` no registro, é o mesmo alvo do
+// envio. Com ele (uma URL), só o baixar passa a olhar o remote que aponta para
+// essa URL — ex.: o centria envia para `base` e baixa do centralcontabil-tech.
+// Branch: o de mesmo nome lá, se existir; senão o default daquele remote.
+function normalizarUrlGit(u) {
+  return String(u || "").trim().toLowerCase().replace(/\.git$/, "").replace(/\/+$/, "");
+}
+
+async function remoteDaUrl(dir, url) {
+  try {
+    for (const linha of (await execP(`git -C "${dir}" remote -v`)).split(/\r?\n/)) {
+      const [nome, u, tipo] = linha.trim().split(/\s+/);
+      if (tipo === "(fetch)" && normalizarUrlGit(u) === normalizarUrlGit(url)) return nome;
+    }
+  } catch {}
+  return "";
+}
+
+async function alvoDownload(dir, url, branch) {
+  const remote = await remoteDaUrl(dir, url);
+  if (!remote) return { erro: `nenhum remote do repo aponta para ${url} (adicione com git remote add)` };
+  const cands = [branch && branch !== "HEAD" ? `${remote}/${branch}` : "", `${remote}/HEAD`, `${remote}/main`, `${remote}/master`].filter(Boolean);
+  for (const cand of cands) {
+    try {
+      const r = (await execP(`git -C "${dir}" rev-parse --abbrev-ref ${cand}`)).trim();
+      const barra = r.indexOf("/");
+      if (barra > 0) return { remote, branchRemoto: r.slice(barra + 1), ref: r };
+    } catch {}
+  }
+  return { erro: `remote ${remote} (${url}) sem branch para comparar — rode um fetch` };
 }
 
 async function detalheGit(appId) {
@@ -773,7 +843,7 @@ async function detalheGit(appId) {
       : motivoBloqueio(it.caminho, protegidos);
     if (motivo) bloqueados.push({ ...it, motivo }); else entram.push(it);
   }
-  const push = await alvoPush(dir);
+  const push = await alvoPush(dir, alvo.remotoEnvio);
   const git = _gitCache.apps[appId] || {};
 
   // Quantos commits faltam enviar, contados AGORA. O `ahead` do cache tem ate 5
@@ -800,11 +870,25 @@ async function detalheGit(appId) {
     }
   }
 
+  // Baixar com remoto próprio: o "à frente" e o pull olham para ele, não para o
+  // alvo do push. `atrasoPush` guarda o atraso do lado do envio (push recusado).
+  const atrasoPush = porTrazer;
+  let download = null;
+  if (alvo.remotoDownload) {
+    const dl = await alvoDownload(dir, alvo.remotoDownload, push.branch || git.branch);
+    download = { url: alvo.remotoDownload, remote: dl.remote || null, branchRemoto: dl.branchRemoto || null, erro: dl.erro || null };
+    porTrazer = 0;
+    if (dl.ref) {
+      try { porTrazer = parseInt((await execP(`git -C "${dir}" rev-list --count HEAD..${dl.ref}`)).trim(), 10) || 0; } catch {}
+    }
+  }
+
   return {
     ok: true, id: appId, nome: alvo.nome, dir,
     branch: push.branch || git.branch || "?",
     remote: push.remote, branchRemoto: push.branchRemoto, branchNovo: !!push.novo,
     erroAlvo: push.erro || null,
+    download, atrasoPush,
     porEnviar, porTrazer, ahead: git.ahead || 0, behind: git.behind || 0,
     entram, bloqueados,
   };
@@ -1031,10 +1115,13 @@ async function trazerDoRemoto(appId) {
 
   const d = await detalheGit(appId);
   if (!d.ok) return { ok: false, erro: d.erro, passos };
-  if (d.erroAlvo) return { ok: false, erro: d.erroAlvo, passos };
+  if (d.download?.erro) return { ok: false, erro: d.download.erro, passos };
+  if (!d.download && d.erroAlvo) return { ok: false, erro: d.erroAlvo, passos };
   if (!d.porTrazer) { registrar("nada a trazer — já está em dia com o remoto", "ok"); return { ok: true, passos }; }
 
-  const { dir, nome, remote, branch, branchRemoto } = d;
+  const { dir, nome } = d;
+  const remote = d.download ? d.download.remote : d.remote;
+  const branchRemoto = d.download ? d.download.branchRemoto : d.branchRemoto;
   registrar(`${nome} — trazendo ${d.porTrazer} commit(s) de ${remote}/${branchRemoto}`);
 
   // Trabalho solto não impede um fast-forward, mas impede se tocar nos mesmos

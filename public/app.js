@@ -653,10 +653,18 @@ async function abrirEnvio(appId) {
 
   // Commit no remoto que não está aqui = push recusado por non-fast-forward.
   // Avisar antes evita fazer o commit à toa e só descobrir na hora do envio.
-  const atrasado = d.porTrazer > 0
-    ? `<div class="git-warn">${icon("alert")}<span><strong>O remoto está ${d.porTrazer} commit(s) à frente.</strong>
-         Enviar agora vai commitar e o push será recusado. Traga o que falta primeiro.</span></div>`
-    : "";
+  // Com remoto de download próprio, o "à frente" é dele e não trava o push.
+  const atrasado = d.download
+    ? (d.download.erro
+        ? `<div class="git-warn">${icon("alert")}<span><strong>Remoto de download:</strong> ${escapeHtml(d.download.erro)}</span></div>`
+        : d.porTrazer > 0
+          ? `<div class="git-warn">${icon("alert")}<span><strong>${escapeHtml(d.download.remote)}/${escapeHtml(d.download.branchRemoto)} está ${d.porTrazer} commit(s) à frente.</strong>
+               Baixando de ${escapeHtml(d.download.url)}.</span></div>`
+          : "")
+    : d.porTrazer > 0
+      ? `<div class="git-warn">${icon("alert")}<span><strong>O remoto está ${d.porTrazer} commit(s) à frente.</strong>
+           Enviar agora vai commitar e o push será recusado. Traga o que falta primeiro.</span></div>`
+      : "";
 
   body.innerHTML = `
     ${destino}
